@@ -1,13 +1,34 @@
 #include "linkerbot_hand_ros_cpp/driver_config.hpp"
+#include "linkerbot/can/pcan_transport.hpp"
+#include "linkerbot/can/vendor_canfd_transport.hpp"
+#include "linkerbot/hand/api/device.hpp"
+#include "linkerbot/hand/api/events.hpp"
+#include "linkerbot/hand/capabilities.hpp"
+#include "linkerbot/hand/discovery.hpp"
+#include "linkerbot/hand/errors.hpp"
+#include "rcl_interfaces/msg/parameter_descriptor.hpp"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
-#include <jsoncpp/json/json.h>
+#include <initializer_list>
+#include <iterator>
+#include <json/reader.h>
 #include <limits>
 #include <linkerbot/hand/adapter_transport.hpp>
 #include <map>
+#include <memory>
+#include <optional>
+#include <rclcpp/parameter.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <set>
+#include <string>
+#include <utility>
+#include <vector>
 #include <yaml-cpp/yaml.h>
 
 namespace linkerbot_hand_ros_cpp {
@@ -161,7 +182,7 @@ namespace linkerbot_hand_ros_cpp {
         auto &cfg = result.device;
         cfg.model = parse_model(text("model"));
         const auto side = text("side");
-        if (side != "left" && side != "right" && side != "" && side != "not_applicable") {
+        if (side != "left" && side != "right" && !side.empty() && side != "not_applicable") {
             throw hand::ValidationError("side must be left, right or not_applicable");
         }
         cfg.side = side == "left"    ? hand::HandSide::kLeft
@@ -287,7 +308,7 @@ namespace linkerbot_hand_ros_cpp {
             if (!stream) {
                 throw hand::ValidationError("cannot read discovery_config");
             }
-            std::string content((std::istreambuf_iterator<char>(stream)), {});
+            std::string const content((std::istreambuf_iterator<char>(stream)), {});
             apply_discovery_configuration(result.discovery, content,
                                           std::filesystem::absolute(discovery_file).parent_path());
         }
@@ -386,7 +407,7 @@ namespace linkerbot_hand_ros_cpp {
                   {"channels", "bitrate", "nominal_bitrate", "data_bitrate", "probe_protocols", "library_path",
                    "fd_timing", "serial_baud", "command_timeout_s", "startup_delay_s", "protocol", "bus_options"});
             const bool pcan = std::string(backend) == "pcan";
-            if (section["bus_options"] && section["bus_options"].size()) {
+            if (section["bus_options"] && (section["bus_options"].size() != 0u)) {
                 throw hand::UnsupportedOperationError(
                     std::string(backend) + ".bus_options: generic python-can plugin options have no C++ mapping");
             }
@@ -412,15 +433,15 @@ namespace linkerbot_hand_ros_cpp {
                     const auto timing = section["fd_timing"];
                     check(timing, {"f_clock", "nom_brp", "nom_tseg1", "nom_tseg2", "nom_sjw", "data_brp", "data_tseg1",
                                    "data_tseg2", "data_sjw"});
-                    std::map<std::string, uint32_t *> fields{{"f_clock", &target.fd_timing.clock_hz},
-                                                             {"nom_brp", &target.fd_timing.nominal_prescaler},
-                                                             {"nom_tseg1", &target.fd_timing.nominal_tseg1},
-                                                             {"nom_tseg2", &target.fd_timing.nominal_tseg2},
-                                                             {"nom_sjw", &target.fd_timing.nominal_sjw},
-                                                             {"data_brp", &target.fd_timing.data_prescaler},
-                                                             {"data_tseg1", &target.fd_timing.data_tseg1},
-                                                             {"data_tseg2", &target.fd_timing.data_tseg2},
-                                                             {"data_sjw", &target.fd_timing.data_sjw}};
+                    std::map<std::string, uint32_t *> const fields{{"f_clock", &target.fd_timing.clock_hz},
+                                                                   {"nom_brp", &target.fd_timing.nominal_prescaler},
+                                                                   {"nom_tseg1", &target.fd_timing.nominal_tseg1},
+                                                                   {"nom_tseg2", &target.fd_timing.nominal_tseg2},
+                                                                   {"nom_sjw", &target.fd_timing.nominal_sjw},
+                                                                   {"data_brp", &target.fd_timing.data_prescaler},
+                                                                   {"data_tseg1", &target.fd_timing.data_tseg1},
+                                                                   {"data_tseg2", &target.fd_timing.data_tseg2},
+                                                                   {"data_sjw", &target.fd_timing.data_sjw}};
                     for (auto &field : fields) {
                         if (timing[field.first]) {
                             *field.second = timing[field.first].as<uint32_t>();
@@ -625,7 +646,7 @@ namespace linkerbot_hand_ros_cpp {
                 }
                 const auto number_text = channel.substr(11);
                 size_t consumed = 0;
-                unsigned long number;
+                unsigned long number = 0;
                 try {
                     number = std::stoul(number_text, &consumed);
                 } catch (...) {
@@ -647,7 +668,8 @@ namespace linkerbot_hand_ros_cpp {
     void validate_polling(const hand::PollingPlan &plan, const hand::DeviceCapabilities &caps) {
         for (const auto &channel : plan) {
             const auto *capability = caps.telemetry_channel(channel.semantic);
-            if (!capability || !capability->can_query || capability->read_mode == hand::ReadMode::kCommandCache ||
+            if ((capability == nullptr) || !capability->can_query ||
+                capability->read_mode == hand::ReadMode::kCommandCache ||
                 capability->read_mode == hand::ReadMode::kCommandResponse) {
                 throw hand::PollingPlanError("requested channel does not support active polling");
             }
