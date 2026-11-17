@@ -1,41 +1,42 @@
 #include "linkerbot_hand_ros_cpp/conversions.hpp"
-#include "builtin_interfaces/msg/time.hpp"
 #include "linkerbot/hand/api/commands.hpp"
 #include "linkerbot/hand/api/readings.hpp"
 #include "linkerbot/hand/capabilities.hpp"
 #include "linkerbot/hand/errors.hpp"
 #include "linkerbot/hand/identity.hpp"
-#include "linkerbot_hand_msgs/msg/command_capability.hpp"
-#include "linkerbot_hand_msgs/msg/force_field_capability.hpp"
-#include "linkerbot_hand_msgs/msg/force_sensor_value.hpp"
-#include "linkerbot_hand_msgs/msg/hand_capabilities.hpp"
-#include "linkerbot_hand_msgs/msg/hand_command_status.hpp"
-#include "linkerbot_hand_msgs/msg/hand_device_info.hpp"
-#include "linkerbot_hand_msgs/msg/hand_force_field.hpp"
-#include "linkerbot_hand_msgs/msg/hand_joint_state.hpp"
-#include "linkerbot_hand_msgs/msg/hand_normal_force_resultant.hpp"
-#include "linkerbot_hand_msgs/msg/hand_tactile_field.hpp"
-#include "linkerbot_hand_msgs/msg/hand_tactile_sensor.hpp"
-#include "linkerbot_hand_msgs/msg/hand_tactile_sensor_state.hpp"
-#include "linkerbot_hand_msgs/msg/hand_tactile_state.hpp"
-#include "linkerbot_hand_msgs/msg/hand_telemetry.hpp"
-#include "linkerbot_hand_msgs/msg/identity_capability.hpp"
-#include "linkerbot_hand_msgs/msg/joint_capability.hpp"
-#include "linkerbot_hand_msgs/msg/numeric_range.hpp"
-#include "linkerbot_hand_msgs/msg/percent_mapping.hpp"
-#include "linkerbot_hand_msgs/msg/sample_metadata.hpp"
-#include "linkerbot_hand_msgs/msg/stall_field_capability.hpp"
-#include "linkerbot_hand_msgs/msg/tactile_matrix.hpp"
-#include "linkerbot_hand_msgs/msg/telemetry_capability.hpp"
-#include "linkerbot_hand_msgs/msg/version_field.hpp"
 #include "linkerbot_hand_ros_cpp/driver_config.hpp"
 #include <algorithm>
+#include <array>
+#include <builtin_interfaces/msg/time.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <linkerbot_hand_msgs/msg/command_capability.hpp>
+#include <linkerbot_hand_msgs/msg/force_field_capability.hpp>
+#include <linkerbot_hand_msgs/msg/force_sensor_value.hpp>
+#include <linkerbot_hand_msgs/msg/hand_capabilities.hpp>
+#include <linkerbot_hand_msgs/msg/hand_command_status.hpp>
+#include <linkerbot_hand_msgs/msg/hand_device_info.hpp>
+#include <linkerbot_hand_msgs/msg/hand_force_field.hpp>
+#include <linkerbot_hand_msgs/msg/hand_joint_state.hpp>
+#include <linkerbot_hand_msgs/msg/hand_normal_force_resultant.hpp>
+#include <linkerbot_hand_msgs/msg/hand_tactile_field.hpp>
+#include <linkerbot_hand_msgs/msg/hand_tactile_sensor.hpp>
+#include <linkerbot_hand_msgs/msg/hand_tactile_sensor_state.hpp>
+#include <linkerbot_hand_msgs/msg/hand_tactile_state.hpp>
+#include <linkerbot_hand_msgs/msg/hand_telemetry.hpp>
+#include <linkerbot_hand_msgs/msg/identity_capability.hpp>
+#include <linkerbot_hand_msgs/msg/joint_capability.hpp>
+#include <linkerbot_hand_msgs/msg/numeric_range.hpp>
+#include <linkerbot_hand_msgs/msg/percent_mapping.hpp>
+#include <linkerbot_hand_msgs/msg/sample_metadata.hpp>
+#include <linkerbot_hand_msgs/msg/stall_field_capability.hpp>
+#include <linkerbot_hand_msgs/msg/tactile_matrix.hpp>
+#include <linkerbot_hand_msgs/msg/telemetry_capability.hpp>
+#include <linkerbot_hand_msgs/msg/version_field.hpp>
 #include <optional>
 #include <rclcpp/time.hpp>
 #include <stdexcept>
@@ -47,12 +48,7 @@
 namespace linkerbot_hand_ros_cpp {
     namespace {
         template <typename T> std::vector<std::string> strings(const T &values) {
-            std::vector<std::string> result;
-            result.reserve(values.size());
-            for (const auto &value : values) {
-                result.emplace_back(value);
-            }
-            return result;
+            return std::vector<std::string>(values.begin(), values.end());
         }
         std::string confidence(hand::Confidence value) {
             switch (value) {
@@ -317,176 +313,208 @@ namespace linkerbot_hand_ros_cpp {
         // sample's validity/freshness, but leave wire origin NONE rather than guess.
         return result;
     }
+    namespace {
+        void append_joint_capabilities(msg::HandCapabilities &result, const hand::DeviceCapabilities &caps) {
+            const auto *angle = caps.command(hand::CommandSemantic::kAngles);
+            const auto angle_unit = (angle != nullptr) ? angle->raw_unit.value_or("") : std::string_view("");
+            for (const auto &value : caps.joints) {
+                msg::JointCapability joint;
+                joint.index = value.index;
+                joint.name = value.name;
+                switch (value.motion_type) {
+                case hand::JointMotionType::kFlexion:
+                    joint.motion_type = "flexion";
+                    break;
+                case hand::JointMotionType::kAbduction:
+                    joint.motion_type = "abduction";
+                    break;
+                case hand::JointMotionType::kRoll:
+                    joint.motion_type = "roll";
+                    break;
+                case hand::JointMotionType::kRotation:
+                    joint.motion_type = "rotation";
+                    break;
+                case hand::JointMotionType::kWrist:
+                    joint.motion_type = "wrist";
+                    break;
+                default:
+                    joint.motion_type = "unknown";
+                }
+                joint.raw_angle_range = range(value.raw_angle_range, angle_unit);
+                joint.percent_mapping = percent(value.percent_mapping);
+                joint.physical_angle_mapping.confidence = "unknown";
+                if (value.physical_angle_mapping) {
+                    const auto &mapping = *value.physical_angle_mapping;
+                    auto &out = joint.physical_angle_mapping;
+                    out.supported = true;
+                    out.raw_at_first = mapping.raw_at_first;
+                    out.raw_at_second = mapping.raw_at_second;
+                    out.rad_at_first = mapping.radians_at_first;
+                    out.rad_at_second = mapping.radians_at_second;
+                    out.confidence = confidence(mapping.confidence);
+                }
+                joint.coupled_with = strings(value.coupled_with);
+                result.joints.push_back(std::move(joint));
+            }
+        }
+
+        void append_command_capabilities(msg::HandCapabilities &result, const hand::DeviceCapabilities &caps) {
+            for (const auto &value : caps.commands) {
+                msg::CommandCapability command;
+                command.semantic = semantic_name(value.semantic);
+                command.channel_names = strings(value.channels);
+                command.raw_encoding = value.raw_encoding;
+                command.has_raw_unit = value.raw_unit.has_value();
+                command.raw_unit = value.raw_unit.value_or("");
+                command.has_raw_scale_note = value.raw_scale_note.has_value();
+                command.raw_scale_note = value.raw_scale_note.value_or("");
+                command.unit_confidence = confidence(value.unit_confidence);
+                command.ack_support = value.ack_support == hand::AckSupport::kUnsupported ? "unsupported" : "supported";
+                command.returns_current_state = value.returns_current_state;
+                for (size_t i = 0; i < value.channels.size(); ++i) {
+                    if (const auto *raw_range = value.range_for(i)) {
+                        command.raw_ranges.push_back(range(*raw_range, command.raw_unit));
+                    }
+                    command.percent_mappings.push_back(
+                        percent(i < value.percent_mappings.size() ? value.percent_mappings[i] : std::nullopt));
+                }
+                result.commands.push_back(std::move(command));
+            }
+        }
+
+        void append_telemetry_capabilities(msg::HandCapabilities &result, const hand::DeviceCapabilities &caps,
+                                           const std::optional<hand::DeviceIdentity> &identity) {
+            for (const auto &value : caps.telemetry) {
+                msg::TelemetryCapability telemetry_capability;
+                telemetry_capability.semantic = semantic_name(value.semantic);
+                telemetry_capability.channel_names = strings(value.channels);
+                for (auto dim : value.shape) {
+                    telemetry_capability.shape.push_back(dim);
+                }
+                if (value.raw_range) {
+                    for (size_t i = 0; i < value.channels.size(); ++i) {
+                        telemetry_capability.raw_ranges.push_back(range(*value.raw_range, value.raw_unit.value_or("")));
+                    }
+                }
+                telemetry_capability.raw_encoding = value.raw_encoding;
+                telemetry_capability.payload_projection = projection(value);
+                telemetry_capability.decoded_statuses = value.semantic == hand::TelemetrySemantic::kFaults &&
+                                                        state_supported("fault_statuses", caps, identity);
+                telemetry_capability.has_raw_unit = value.raw_unit.has_value();
+                telemetry_capability.raw_unit = value.raw_unit.value_or("");
+                telemetry_capability.has_raw_scale_note = value.raw_scale_note.has_value();
+                telemetry_capability.raw_scale_note = value.raw_scale_note.value_or("");
+                telemetry_capability.unit_confidence = confidence(value.unit_confidence);
+                telemetry_capability.read_mode = read_mode(value.read_mode);
+                if (value.recommended_period_ms && *value.recommended_period_ms > 0) {
+                    telemetry_capability.recommended_hz = 1000.0 / *value.recommended_period_ms;
+                }
+                // minimum_period_ms is scheduling advice, not a measured maximum rate.
+                telemetry_capability.stale_after_s = value.freshness_ms.value_or(0.0) / 1000.0;
+                telemetry_capability.device_measured = value.device_measured;
+                telemetry_capability.device_queried = value.device_queried;
+                result.telemetry.push_back(std::move(telemetry_capability));
+            }
+        }
+
+        void append_force_field_capabilities(msg::HandCapabilities &result, const hand::DeviceCapabilities &caps) {
+            for (const auto &value : caps.force_fields()) {
+                msg::ForceFieldCapability field;
+                field.name = value.name;
+                field.support_known = value.supported.has_value();
+                field.supported = value.supported.value_or(false);
+                if (value.query_channel) {
+                    field.query_channel = semantic_name(*value.query_channel);
+                }
+                field.shared_fields = strings(value.shared_fields);
+                field.sensor_names = strings(value.sensor_names);
+                field.raw_unit = value.raw_unit.value_or("");
+                field.raw_encoding = value.raw_encoding.value_or("");
+                field.raw_scale_note = value.raw_scale_note.value_or("");
+                result.force_fields.push_back(std::move(field));
+            }
+        }
+
+        void append_transport_capabilities(msg::HandCapabilities &result, const hand::DeviceCapabilities &caps) {
+            auto &transport = result.transport;
+            transport.kind = caps.transport.kind == hand::TransportKind::kCan ? "can" : "can_fd";
+            transport.has_nominal_bitrate = caps.transport.nominal_bitrate.has_value();
+            transport.nominal_bitrate = caps.transport.nominal_bitrate.value_or(0);
+            transport.has_data_bitrate = caps.transport.data_bitrate.has_value();
+            transport.data_bitrate = caps.transport.data_bitrate.value_or(0);
+            transport.addressing_note = caps.transport.addressing_note;
+        }
+
+        void append_operation_capabilities(msg::HandCapabilities &result, const hand::DeviceCapabilities &caps) {
+            auto &operations = result.operations;
+            operations.read_device_info = caps.operations.read_device_info;
+            operations.clear_faults = caps.operations.clear_faults;
+            operations.enable = caps.operations.enable;
+            operations.disable = caps.operations.disable;
+            operations.calibrate = caps.operations.calibrate;
+            operations.save_parameters = caps.operations.save_parameters;
+            for (auto value : caps.operations.acknowledged_operations) {
+                operations.acknowledged_operations.push_back(operation_name(value));
+            }
+        }
+
+        void append_stall_capabilities(msg::HandCapabilities &result, const hand::DeviceCapabilities &caps) {
+            auto &operations = result.operations;
+            const std::array stall_semantics = {hand::TelemetrySemantic::kStallDetectionTimes,
+                                                hand::TelemetrySemantic::kStallThresholds,
+                                                hand::TelemetrySemantic::kStallHoldCurrents};
+            auto &stall = result.stall_protection;
+            const std::array fields = {&stall.detection_time, &stall.threshold, &stall.hold_current};
+            bool readable = true;
+            bool writable = true;
+            for (size_t i = 0; i < 3; ++i) {
+                const auto *input = caps.telemetry_channel(stall_semantics[i]);
+                const std::array commands = {hand::CommandSemantic::kStallDetectionTimes,
+                                             hand::CommandSemantic::kStallThresholds,
+                                             hand::CommandSemantic::kStallHoldCurrents};
+                const auto command = commands[i];
+                auto &out = *fields[i];
+                out.semantic = semantic_name(stall_semantics[i]);
+                out.read_supported = input != nullptr;
+                out.write_supported = caps.supports(command);
+                readable = readable && out.read_supported;
+                writable = writable && out.write_supported;
+                if (input == nullptr) {
+                    continue;
+                }
+                out.channel_names = strings(input->channels);
+                out.raw_encoding = input->raw_encoding;
+                out.has_raw_unit = input->raw_unit.has_value();
+                out.raw_unit = input->raw_unit.value_or("");
+                out.has_raw_scale_note = input->raw_scale_note.has_value();
+                out.raw_scale_note = input->raw_scale_note.value_or("");
+                out.unit_confidence = confidence(input->unit_confidence);
+                if (input->raw_range) {
+                    for (size_t j = 0; j < input->channels.size(); ++j) {
+                        out.raw_ranges.push_back(range(input->raw_range.value_or(hand::NumericRange{}), out.raw_unit));
+                    }
+                }
+            }
+            stall.supported = readable || writable;
+            stall.read_supported = operations.read_stall_protection = readable;
+            stall.write_supported = operations.write_stall_protection = writable;
+            stall.has_hold_current = fields[2]->read_supported || fields[2]->write_supported;
+            stall.channel_names = fields[0]->channel_names;
+            stall.physical_semantics_confidence = "unknown";
+        }
+    }
     msg::HandCapabilities capabilities(const hand::DeviceCapabilities &caps,
                                        const std::optional<hand::DeviceIdentity> &identity) {
         msg::HandCapabilities result;
         result.revision = "1.5"; // ROS wire schema; independent of SDK capability schema.
         result.identity = identity_message(caps, identity);
-        const auto *angle = caps.command(hand::CommandSemantic::kAngles);
-        const auto angle_unit = (angle != nullptr) ? angle->raw_unit.value_or("") : std::string_view("");
-        for (const auto &value : caps.joints) {
-            msg::JointCapability joint;
-            joint.index = value.index;
-            joint.name = value.name;
-            switch (value.motion_type) {
-            case hand::JointMotionType::kFlexion:
-                joint.motion_type = "flexion";
-                break;
-            case hand::JointMotionType::kAbduction:
-                joint.motion_type = "abduction";
-                break;
-            case hand::JointMotionType::kRoll:
-                joint.motion_type = "roll";
-                break;
-            case hand::JointMotionType::kRotation:
-                joint.motion_type = "rotation";
-                break;
-            case hand::JointMotionType::kWrist:
-                joint.motion_type = "wrist";
-                break;
-            default:
-                joint.motion_type = "unknown";
-            }
-            joint.raw_angle_range = range(value.raw_angle_range, angle_unit);
-            joint.percent_mapping = percent(value.percent_mapping);
-            joint.physical_angle_mapping.confidence = "unknown";
-            if (value.physical_angle_mapping) {
-                const auto &mapping = *value.physical_angle_mapping;
-                auto &out = joint.physical_angle_mapping;
-                out.supported = true;
-                out.raw_at_first = mapping.raw_at_first;
-                out.raw_at_second = mapping.raw_at_second;
-                out.rad_at_first = mapping.radians_at_first;
-                out.rad_at_second = mapping.radians_at_second;
-                out.confidence = confidence(mapping.confidence);
-            }
-            joint.coupled_with = strings(value.coupled_with);
-            result.joints.push_back(std::move(joint));
-        }
-        for (const auto &value : caps.commands) {
-            msg::CommandCapability command;
-            command.semantic = semantic_name(value.semantic);
-            command.channel_names = strings(value.channels);
-            command.raw_encoding = value.raw_encoding;
-            command.has_raw_unit = value.raw_unit.has_value();
-            command.raw_unit = value.raw_unit.value_or("");
-            command.has_raw_scale_note = value.raw_scale_note.has_value();
-            command.raw_scale_note = value.raw_scale_note.value_or("");
-            command.unit_confidence = confidence(value.unit_confidence);
-            command.ack_support = value.ack_support == hand::AckSupport::kUnsupported ? "unsupported" : "supported";
-            command.returns_current_state = value.returns_current_state;
-            for (size_t i = 0; i < value.channels.size(); ++i) {
-                if (const auto *raw_range = value.range_for(i)) {
-                    command.raw_ranges.push_back(range(*raw_range, command.raw_unit));
-                }
-                command.percent_mappings.push_back(
-                    percent(i < value.percent_mappings.size() ? value.percent_mappings[i] : std::nullopt));
-            }
-            result.commands.push_back(std::move(command));
-        }
-        for (const auto &value : caps.telemetry) {
-            msg::TelemetryCapability telemetry_capability;
-            telemetry_capability.semantic = semantic_name(value.semantic);
-            telemetry_capability.channel_names = strings(value.channels);
-            for (auto dim : value.shape) {
-                telemetry_capability.shape.push_back(dim);
-            }
-            if (value.raw_range) {
-                for (size_t i = 0; i < value.channels.size(); ++i) {
-                    telemetry_capability.raw_ranges.push_back(range(*value.raw_range, value.raw_unit.value_or("")));
-                }
-            }
-            telemetry_capability.raw_encoding = value.raw_encoding;
-            telemetry_capability.payload_projection = projection(value);
-            telemetry_capability.decoded_statuses =
-                value.semantic == hand::TelemetrySemantic::kFaults && state_supported("fault_statuses", caps, identity);
-            telemetry_capability.has_raw_unit = value.raw_unit.has_value();
-            telemetry_capability.raw_unit = value.raw_unit.value_or("");
-            telemetry_capability.has_raw_scale_note = value.raw_scale_note.has_value();
-            telemetry_capability.raw_scale_note = value.raw_scale_note.value_or("");
-            telemetry_capability.unit_confidence = confidence(value.unit_confidence);
-            telemetry_capability.read_mode = read_mode(value.read_mode);
-            if (value.recommended_period_ms && *value.recommended_period_ms > 0) {
-                telemetry_capability.recommended_hz = 1000.0 / *value.recommended_period_ms;
-            }
-            // minimum_period_ms is scheduling advice, not a measured maximum rate.
-            telemetry_capability.stale_after_s = value.freshness_ms.value_or(0.0) / 1000.0;
-            telemetry_capability.device_measured = value.device_measured;
-            telemetry_capability.device_queried = value.device_queried;
-            result.telemetry.push_back(std::move(telemetry_capability));
-        }
-        for (const auto &value : caps.force_fields()) {
-            msg::ForceFieldCapability field;
-            field.name = value.name;
-            field.support_known = value.supported.has_value();
-            field.supported = value.supported.value_or(false);
-            if (value.query_channel) {
-                field.query_channel = semantic_name(*value.query_channel);
-            }
-            field.shared_fields = strings(value.shared_fields);
-            field.sensor_names = strings(value.sensor_names);
-            field.raw_unit = value.raw_unit.value_or("");
-            field.raw_encoding = value.raw_encoding.value_or("");
-            field.raw_scale_note = value.raw_scale_note.value_or("");
-            result.force_fields.push_back(std::move(field));
-        }
-        auto &transport = result.transport;
-        transport.kind = caps.transport.kind == hand::TransportKind::kCan ? "can" : "can_fd";
-        transport.has_nominal_bitrate = caps.transport.nominal_bitrate.has_value();
-        transport.nominal_bitrate = caps.transport.nominal_bitrate.value_or(0);
-        transport.has_data_bitrate = caps.transport.data_bitrate.has_value();
-        transport.data_bitrate = caps.transport.data_bitrate.value_or(0);
-        transport.addressing_note = caps.transport.addressing_note;
-        auto &operations = result.operations;
-        operations.read_device_info = caps.operations.read_device_info;
-        operations.clear_faults = caps.operations.clear_faults;
-        operations.enable = caps.operations.enable;
-        operations.disable = caps.operations.disable;
-        operations.calibrate = caps.operations.calibrate;
-        operations.save_parameters = caps.operations.save_parameters;
-        for (auto value : caps.operations.acknowledged_operations) {
-            operations.acknowledged_operations.push_back(operation_name(value));
-        }
-        const hand::TelemetrySemantic stall_semantics[] = {hand::TelemetrySemantic::kStallDetectionTimes,
-                                                           hand::TelemetrySemantic::kStallThresholds,
-                                                           hand::TelemetrySemantic::kStallHoldCurrents};
-        auto &stall = result.stall_protection;
-        msg::StallFieldCapability *fields[] = {&stall.detection_time, &stall.threshold, &stall.hold_current};
-        bool readable = true;
-        bool writable = true;
-        for (size_t i = 0; i < 3; ++i) {
-            const auto *input = caps.telemetry_channel(stall_semantics[i]);
-            const auto command = i == 0   ? hand::CommandSemantic::kStallDetectionTimes
-                                 : i == 1 ? hand::CommandSemantic::kStallThresholds
-                                          : hand::CommandSemantic::kStallHoldCurrents;
-            auto &out = *fields[i];
-            out.semantic = semantic_name(stall_semantics[i]);
-            out.read_supported = input != nullptr;
-            out.write_supported = caps.supports(command);
-            readable = readable && out.read_supported;
-            writable = writable && out.write_supported;
-            if (input == nullptr) {
-                continue;
-            }
-            out.channel_names = strings(input->channels);
-            out.raw_encoding = input->raw_encoding;
-            out.has_raw_unit = input->raw_unit.has_value();
-            out.raw_unit = input->raw_unit.value_or("");
-            out.has_raw_scale_note = input->raw_scale_note.has_value();
-            out.raw_scale_note = input->raw_scale_note.value_or("");
-            out.unit_confidence = confidence(input->unit_confidence);
-            if (input->raw_range) {
-                for (size_t j = 0; j < input->channels.size(); ++j) {
-                    out.raw_ranges.push_back(range(*input->raw_range, out.raw_unit));
-                }
-            }
-        }
-        stall.supported = readable || writable;
-        stall.read_supported = operations.read_stall_protection = readable;
-        stall.write_supported = operations.write_stall_protection = writable;
-        stall.has_hold_current = fields[2]->read_supported || fields[2]->write_supported;
-        stall.channel_names = fields[0]->channel_names;
-        stall.physical_semantics_confidence = "unknown";
+        append_joint_capabilities(result, caps);
+        append_command_capabilities(result, caps);
+        append_telemetry_capabilities(result, caps, identity);
+        append_force_field_capabilities(result, caps);
+        append_transport_capabilities(result, caps);
+        append_operation_capabilities(result, caps);
+        append_stall_capabilities(result, caps);
         return result;
     }
     msg::HandDeviceInfo device_info(const hand::DeviceIdentity &value, const rclcpp::Time &now, uint64_t generation) {
