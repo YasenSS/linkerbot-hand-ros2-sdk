@@ -344,35 +344,35 @@ namespace linkerbot_hand_ros_cpp {
             result.commands.push_back(std::move(command));
         }
         for (const auto &value : caps.telemetry) {
-            msg::TelemetryCapability telemetry;
-            telemetry.semantic = semantic_name(value.semantic);
-            telemetry.channel_names = strings(value.channels);
+            msg::TelemetryCapability telemetry_capability;
+            telemetry_capability.semantic = semantic_name(value.semantic);
+            telemetry_capability.channel_names = strings(value.channels);
             for (auto dim : value.shape) {
-                telemetry.shape.push_back(dim);
+                telemetry_capability.shape.push_back(dim);
             }
             if (value.raw_range) {
                 for (size_t i = 0; i < value.channels.size(); ++i) {
-                    telemetry.raw_ranges.push_back(range(*value.raw_range, value.raw_unit.value_or("")));
+                    telemetry_capability.raw_ranges.push_back(range(*value.raw_range, value.raw_unit.value_or("")));
                 }
             }
-            telemetry.raw_encoding = value.raw_encoding;
-            telemetry.payload_projection = projection(value);
-            telemetry.decoded_statuses =
+            telemetry_capability.raw_encoding = value.raw_encoding;
+            telemetry_capability.payload_projection = projection(value);
+            telemetry_capability.decoded_statuses =
                 value.semantic == hand::TelemetrySemantic::kFaults && state_supported("fault_statuses", caps, identity);
-            telemetry.has_raw_unit = value.raw_unit.has_value();
-            telemetry.raw_unit = value.raw_unit.value_or("");
-            telemetry.has_raw_scale_note = value.raw_scale_note.has_value();
-            telemetry.raw_scale_note = value.raw_scale_note.value_or("");
-            telemetry.unit_confidence = confidence(value.unit_confidence);
-            telemetry.read_mode = read_mode(value.read_mode);
+            telemetry_capability.has_raw_unit = value.raw_unit.has_value();
+            telemetry_capability.raw_unit = value.raw_unit.value_or("");
+            telemetry_capability.has_raw_scale_note = value.raw_scale_note.has_value();
+            telemetry_capability.raw_scale_note = value.raw_scale_note.value_or("");
+            telemetry_capability.unit_confidence = confidence(value.unit_confidence);
+            telemetry_capability.read_mode = read_mode(value.read_mode);
             if (value.recommended_period_ms && *value.recommended_period_ms > 0) {
-                telemetry.recommended_hz = 1000.0 / *value.recommended_period_ms;
+                telemetry_capability.recommended_hz = 1000.0 / *value.recommended_period_ms;
             }
             // minimum_period_ms is scheduling advice, not a measured maximum rate.
-            telemetry.stale_after_s = value.freshness_ms.value_or(0.0) / 1000.0;
-            telemetry.device_measured = value.device_measured;
-            telemetry.device_queried = value.device_queried;
-            result.telemetry.push_back(std::move(telemetry));
+            telemetry_capability.stale_after_s = value.freshness_ms.value_or(0.0) / 1000.0;
+            telemetry_capability.device_measured = value.device_measured;
+            telemetry_capability.device_queried = value.device_queried;
+            result.telemetry.push_back(std::move(telemetry_capability));
         }
         for (const auto &value : caps.force_fields()) {
             msg::ForceFieldCapability field;
