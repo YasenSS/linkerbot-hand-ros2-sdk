@@ -1,11 +1,36 @@
+#include "linkerbot/can/message.hpp"
+#include "linkerbot/hand/api/commands.hpp"
+#include "linkerbot/hand/api/device.hpp"
+#include "linkerbot/hand/api/readings.hpp"
+#include "linkerbot/hand/capabilities.hpp"
+#include "linkerbot/hand/discovery.hpp"
+#include "linkerbot/hand/errors.hpp"
+#include "linkerbot/hand/identity.hpp"
+#include "linkerbot_hand_msgs/msg/hand_capabilities.hpp"
+#include "linkerbot_hand_msgs/msg/hand_command_status.hpp"
+#include "linkerbot_hand_msgs/msg/hand_fault_status_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_force_field.hpp"
+#include "linkerbot_hand_msgs/msg/hand_joint_command.hpp"
+#include "linkerbot_hand_msgs/msg/hand_joint_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_normal_force_resultant.hpp"
+#include "linkerbot_hand_msgs/msg/hand_raw_command.hpp"
+#include "linkerbot_hand_msgs/msg/hand_tactile_sensor_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_telemetry.hpp"
+#include "linkerbot_hand_msgs/msg/sample_metadata.hpp"
 #include "linkerbot_hand_ros_cpp/commands.hpp"
+#include "linkerbot_hand_ros_cpp/conversions.hpp"
+#include "linkerbot_hand_ros_cpp/driver_config.hpp"
 #include "linkerbot_hand_ros_cpp/hand_node.hpp"
 #include "linkerbot_hand_ros_cpp/qos.hpp"
 #include <algorithm>
 #include <atomic>
+#include <bits/chrono.h>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <future>
 #include <gtest/gtest.h>
 #include <lifecycle_msgs/msg/state.hpp>
 #include <limits>
@@ -14,12 +39,21 @@
 #include <linkerbot_hand_msgs/srv/get_device_info.hpp>
 #include <linkerbot_hand_msgs/srv/get_raw_values.hpp>
 #include <linkerbot_hand_msgs/srv/recover.hpp>
-#include <linkerbot_hand_msgs/srv/set_raw_values.hpp>
-#include <linkerbot_hand_msgs/srv/submit_command.hpp>
 #include <map>
-#include <rclcpp/rclcpp.hpp>
+#include <memory>
+#include <optional>
+#include <rclcpp/executors/single_threaded_executor.hpp>
+#include <rclcpp/node.hpp>
+#include <rclcpp/node_options.hpp>
+#include <rclcpp/parameter.hpp>
+#include <rclcpp/qos.hpp>
+#include <rclcpp/time.hpp>
+#include <rclcpp/utilities.hpp>
+#include <stdlib.h>
+#include <string>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 namespace driver = linkerbot_hand_ros_cpp;
 namespace hand = linkerbot::hand;
@@ -57,14 +91,14 @@ class DriverTest : public testing::Test {
 protected:
     static void SetUpTestSuite() {
         setenv("ROS_DOMAIN_ID", "89", 0);
-        int argc = 0;
+        int const argc = 0;
         rclcpp::init(argc, nullptr);
     }
     static void TearDownTestSuite() { rclcpp::shutdown(); }
     std::atomic<int> transports{0};
     std::atomic<int> requests{0};
     hand::HandDevice *sdk = nullptr;
-    std::string topic(const std::string &suffix) {
+    static std::string topic(const std::string &suffix) {
         return "/cpp_driver_test_" + std::to_string(getpid()) + "/linkerbot_hand/" + suffix;
     }
     std::shared_ptr<driver::HandNode> node;
@@ -533,7 +567,10 @@ TEST_F(DriverTest, UnsupportedStateProjectionsPublishInvalidSamplesWithoutIo) {
     node->configure();
     node->activate();
     const auto frames = requests.load();
-    bool force = false, sensors = false, normal = false, field = false;
+    bool force = false;
+    bool sensors = false;
+    bool normal = false;
+    bool field = false;
     uint64_t force_generation = 0;
     auto f = client->create_subscription<msg::HandTelemetry>(
         topic("state/force"), driver::state_qos(), [&](const msg::HandTelemetry::ConstSharedPtr &value) {
