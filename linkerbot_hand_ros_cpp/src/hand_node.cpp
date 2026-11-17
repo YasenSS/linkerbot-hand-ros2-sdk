@@ -237,28 +237,32 @@ namespace linkerbot_hand_ros_cpp {
             publish_timer = std::move(next.first);
             diagnostic_timer = std::move(next.second);
         }
+        bool wait_for_feedback(double &backoff) {
+            bool reconnect = false;
+            {
+                std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
+                if (lease.owns_lock() && active && device) {
+                    reconnect = config.auto_reconnect && !device->get_health().connected();
+                    if (!reconnect) {
+                        try {
+                            const auto previous = device->get_snapshot();
+                            (void)device->wait_for_snapshot(previous, 20ms);
+                        } catch (const std::exception &error) {
+                            report(error);
+                        }
+                        backoff = config.reconnect_initial_delay_s;
+                    }
+                }
+            }
+            return reconnect;
+        }
         void start_worker() {
             worker_stop = false;
             cache_worker = std::thread([this] {
                 auto next_recovery = std::chrono::steady_clock::now();
                 double backoff = 0.1;
                 while (!worker_stop) {
-                    bool reconnect = false;
-                    {
-                        std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
-                        if (lease.owns_lock() && active && device) {
-                            reconnect = config.auto_reconnect && !device->get_health().connected();
-                            if (!reconnect) {
-                                try {
-                                    const auto previous = device->get_snapshot();
-                                    (void)device->wait_for_snapshot(previous, 20ms);
-                                } catch (const std::exception &error) {
-                                    report(error);
-                                }
-                                backoff = config.reconnect_initial_delay_s;
-                            }
-                        }
-                    }
+                    const bool reconnect = wait_for_feedback(backoff);
                     if (reconnect && std::chrono::steady_clock::now() >= next_recovery) {
                         std::unique_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
                         if (lease.owns_lock() && active && device && !worker_stop) {
@@ -322,7 +326,7 @@ namespace linkerbot_hand_ros_cpp {
             response.message = error.what();
             report(error);
         }
-        std::chrono::milliseconds timeout(double seconds) const {
+        [[nodiscard]] std::chrono::milliseconds timeout(double seconds) const {
             const double shutdown = std::chrono::duration<double>(config.device.shutdown_timeout).count();
             if (!std::isfinite(seconds) || seconds <= 0 || seconds >= shutdown / 2.0) {
                 throw hand::ValidationError("timeout_s must be positive and less than half shutdown_timeout_s");
