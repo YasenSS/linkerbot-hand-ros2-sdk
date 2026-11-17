@@ -166,10 +166,23 @@ namespace linkerbot_hand_ros_cpp {
         std::mutex error_mutex;
         std::string last_error_code, last_error_message;
 
+        [[nodiscard]] std::unique_lock<std::shared_mutex> parameter_lease() {
+            // ROS holds its parameter mutex during this callback. Bound the wait
+            // because lifecycle code may itself need to read ROS parameters.
+            std::unique_lock<std::shared_mutex> lease(gate, std::defer_lock);
+            const auto deadline = std::chrono::steady_clock::now() + 100ms;
+            while (!lease.try_lock()) {
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    throw hand::LifecycleError("parameter update conflicts with device activity; retry");
+                }
+                std::this_thread::sleep_for(1ms);
+            }
+            return lease;
+        }
         rcl_interfaces::msg::SetParametersResult update_parameters(const std::vector<rclcpp::Parameter> &parameters) {
             rcl_interfaces::msg::SetParametersResult result;
             try {
-                std::unique_lock<std::shared_mutex> const lease(gate);
+                const auto lease = parameter_lease();
                 for (const auto &value : parameters) {
                     const auto &name = value.get_name();
                     if (name == "use_sim_time") {
