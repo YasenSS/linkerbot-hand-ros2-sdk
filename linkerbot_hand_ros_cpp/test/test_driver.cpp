@@ -173,6 +173,33 @@ TEST_F(DriverTest, ConfigureDoesNotOpenTransportAndMetadataIsLatched) {
     EXPECT_EQ(node->cleanup().id(), lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED);
     EXPECT_EQ(transports, 0);
 }
+TEST_F(DriverTest, ParameterUpdatesBoundLifecycleLockWait) {
+    std::promise<void> entered;
+    std::promise<void> proceed;
+    auto ready = entered.get_future();
+    auto release = proceed.get_future().share();
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({rclcpp::Parameter("angle_mapping_path", "/tmp/unused-mapping.toml")});
+    auto isolated = std::make_shared<driver::HandNode>(options, [&](const auto &cfg) {
+        entered.set_value();
+        (void)release.wait_for(2s);
+        return std::make_unique<hand::HandDevice>(cfg,
+                                                  [] { return std::make_unique<linkerbot::can::FakeTransport>(); });
+    });
+    auto configure = std::async(std::launch::async, [&] { return isolated->configure().id(); });
+    const auto started = ready.wait_for(2s);
+    auto update = std::async(std::launch::async,
+                             [&] { return isolated->set_parameter(rclcpp::Parameter("publish_rate_hz", 20.0)); });
+    const auto completed = update.wait_for(200ms);
+    proceed.set_value();
+    const auto result = update.get();
+    EXPECT_EQ(configure.get(), lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE);
+    EXPECT_EQ(started, std::future_status::ready);
+    EXPECT_EQ(completed, std::future_status::ready);
+    EXPECT_FALSE(result.successful);
+    EXPECT_NE(result.reason.find("conflicts with device activity"), std::string::npos);
+}
+
 TEST_F(DriverTest, RealSdkPublishesAnglesAndCommandDelivery) {
     make();
     node->configure();

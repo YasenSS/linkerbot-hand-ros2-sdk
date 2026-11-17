@@ -47,16 +47,38 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           actionlint
   sanitizers:
-    name: ASan and UBSan
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ASan, LSan and UBSan
+            mode: asan-lsan-ubsan
+            address: 'ON'
+            thread: 'OFF'
+            container-options: ''
+            cc: gcc-13
+            cxx: g++-13
+          - name: TSan
+            mode: tsan
+            address: 'OFF'
+            thread: 'ON'
+            container-options: '--security-opt seccomp=unconfined'
+            cc: clang-20
+            cxx: clang++-20
     runs-on: ubuntu-24.04
-    container: ros:jazzy-ros-base
+    container:
+      image: ros:jazzy-ros-base
+      options: ${{ matrix.container-options }}
     timeout-minutes: 45
     env:
-      CC: gcc-13
-      CXX: g++-13
-      LINKERBOT_ROS_CPP_SANITIZERS: 'ON'
-      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:strict_string_checks=1
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      LINKERBOT_ROS_CPP_SANITIZERS: ${{ matrix.address }}
+      LINKERBOT_ROS_CPP_TSAN: ${{ matrix.thread }}
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:external_symbolizer_path=/usr/bin/llvm-symbolizer-20
     defaults:
       run:
         shell: bash
@@ -70,18 +92,26 @@ jobs:
           hand-ref: ${{ env.HAND_REF }}
           transport-repository: ${{ env.COMM_REPOSITORY }}
           transport-ref: ${{ env.COMM_REF }}
+      - name: Install LLVM thread sanitizer runtime
+        if: matrix.thread == 'ON'
+        run: apt-get install -y --no-install-recommends clang-20 libclang-rt-20-dev llvm-20
       - name: Set offline configuration directory
         run: echo "XDG_CONFIG_HOME=${RUNNER_TEMP}/xdg-config" >> "$GITHUB_ENV"
       - name: Build and run instrumented ROS C++ tests
         run: |
           source /opt/ros/jazzy/setup.bash
-          bash tests/cpp/verify.sh external/linkerbot-hand-cpp-sdk \
+          runner=(bash)
+          if [[ "$LINKERBOT_ROS_CPP_TSAN" == ON ]]; then
+            # TSan's fixed shadow mappings require a process without ASLR.
+            runner=(setarch "$(uname -m)" -R bash)
+          fi
+          "${runner[@]}" tests/cpp/verify.sh external/linkerbot-hand-cpp-sdk \
             external/linkerbot-transport-cpp "$PWD/reports/cpp"
       - name: Upload sanitizer evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: sanitizers-ubuntu-24.04
+          name: sanitizers-${{ matrix.mode }}-ubuntu-24.04
           if-no-files-found: warn
           retention-days: 14
           path: |
@@ -89,4 +119,5 @@ jobs:
             reports/cpp/build-log/
             reports/cpp/test-log/
             reports/cpp/ros-logs/
+            reports/cpp/sanitizer-reports/
             reports/cpp/build/linkerbot_hand_ros_cpp/test_results/

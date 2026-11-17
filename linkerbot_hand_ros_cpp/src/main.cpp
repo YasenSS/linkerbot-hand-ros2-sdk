@@ -17,6 +17,8 @@ int main(int argc, char **argv) {
         // Stop executor callbacks before releasing the one device owner. Device
         // cleanup does not require an operational ROS context after SIGINT.
         executor.remove_node(node->get_node_base_interface());
+        // Synchronize with deferred signal shutdown before destroying ROS entities.
+        rclcpp::shutdown();
         node.reset();
     } catch (const std::exception &error) {
         RCLCPP_ERROR(rclcpp::get_logger("linkerbot_hand_ros_cpp"), "%s", error.what());
