@@ -205,8 +205,8 @@ namespace {
         if (std::filesystem::exists(destination)) {
             throw hand::ValidationError("output exists; refusing overwrite: " + destination.string());
         }
-        const auto temporary = destination.string() + ".tmp." + std::to_string(getpid());
-        const int fd = ::open(temporary.c_str(), O_CREAT | O_EXCL | O_WRONLY, 0600);
+        auto temporary = destination.string() + ".tmp.XXXXXX";
+        const int fd = driver::make_temporary_file(temporary.data());
         if (fd < 0) {
             throw hand::ValidationError("cannot create deployment temporary file");
         }
