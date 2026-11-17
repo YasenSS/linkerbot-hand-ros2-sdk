@@ -555,8 +555,8 @@ namespace linkerbot_hand_ros_cpp {
             }
             services.push_back(node.create_service<srv::Recover>(
                 "~/recover",
-                [this](const std::shared_ptr<srv::Recover::Request> request,
-                       std::shared_ptr<srv::Recover::Response> response) {
+                [this](const std::shared_ptr<srv::Recover::Request> &request,
+                       const std::shared_ptr<srv::Recover::Response> &response) {
                     try {
                         std::unique_lock<std::shared_mutex> lease(gate);
                         require_active();

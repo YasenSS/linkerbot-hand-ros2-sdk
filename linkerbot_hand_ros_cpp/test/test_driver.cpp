@@ -124,7 +124,7 @@ TEST_F(DriverTest, ConfigureDoesNotOpenTransportAndMetadataIsLatched) {
     msg::HandCapabilities received;
     auto sub = client->create_subscription<msg::HandCapabilities>(
         topic("capabilities"), driver::metadata_qos(),
-        [&](msg::HandCapabilities::ConstSharedPtr value) { received = *value; });
+        [&](const msg::HandCapabilities::ConstSharedPtr &value) { received = *value; });
     ASSERT_TRUE(until([&] { return !received.joints.empty(); }));
     EXPECT_FALSE(received.identity.verified);
     EXPECT_EQ(received.joints.size(), 6u);
@@ -139,12 +139,12 @@ TEST_F(DriverTest, RealSdkPublishesAnglesAndCommandDelivery) {
     bool feedback = false;
     bool delivered = false;
     auto state = client->create_subscription<msg::HandJointState>(
-        topic("state/angles"), driver::state_qos(), [&](msg::HandJointState::ConstSharedPtr value) {
+        topic("state/angles"), driver::state_qos(), [&](const msg::HandJointState::ConstSharedPtr &value) {
             feedback = value->meta.valid && !value->meta.stale && value->raw.size() == 6 &&
                        value->meta.connection_generation != 0;
         });
     auto status = client->create_subscription<msg::HandCommandStatusBatch>(
-        topic("command/status"), driver::status_qos(), [&](msg::HandCommandStatusBatch::ConstSharedPtr value) {
+        topic("command/status"), driver::status_qos(), [&](const msg::HandCommandStatusBatch::ConstSharedPtr &value) {
             for (const auto &item : value->statuses) {
                 if (item.client_id == 42 && item.user_sequence == 7) {
                     for (const auto &change : item.transitions) {
@@ -382,7 +382,7 @@ TEST_F(DriverTest, UnsupportedTopicCommandReturnsFailedStatusWithoutSdkId) {
     const auto frames = requests.load();
     bool failed = false;
     auto subscription = client->create_subscription<msg::HandCommandStatusBatch>(
-        topic("command/status"), driver::status_qos(), [&](msg::HandCommandStatusBatch::ConstSharedPtr batch) {
+        topic("command/status"), driver::status_qos(), [&](const msg::HandCommandStatusBatch::ConstSharedPtr &batch) {
             for (const auto &status : batch->statuses) {
                 if (status.client_id == 4321) {
                     failed = status.stage == msg::HandCommandStatus::STAGE_FAILED && status.command_id == 0 &&
@@ -536,28 +536,29 @@ TEST_F(DriverTest, UnsupportedStateProjectionsPublishInvalidSamplesWithoutIo) {
     bool force = false, sensors = false, normal = false, field = false;
     uint64_t force_generation = 0;
     auto f = client->create_subscription<msg::HandTelemetry>(
-        topic("state/force"), driver::state_qos(), [&](msg::HandTelemetry::ConstSharedPtr value) {
+        topic("state/force"), driver::state_qos(), [&](const msg::HandTelemetry::ConstSharedPtr &value) {
             force = !value->meta.valid && value->meta.stale && value->raw.empty();
             force_generation = value->meta.connection_generation;
         });
     auto s = client->create_subscription<msg::HandTactileSensorState>(
-        topic("state/tactile_sensors"), driver::state_qos(), [&](msg::HandTactileSensorState::ConstSharedPtr value) {
+        topic("state/tactile_sensors"), driver::state_qos(),
+        [&](const msg::HandTactileSensorState::ConstSharedPtr &value) {
             sensors = !value->meta.valid && value->sensors.empty();
         });
     auto n = client->create_subscription<msg::HandNormalForceResultant>(
         topic("state/normal_force_resultant"), driver::state_qos(),
-        [&](msg::HandNormalForceResultant::ConstSharedPtr value) {
+        [&](const msg::HandNormalForceResultant::ConstSharedPtr &value) {
             normal = !value->meta.valid && value->normal_force_resultant.empty();
         });
     auto p = client->create_subscription<msg::HandForceField>(
         topic("state/force_px"), driver::state_qos(),
-        [&](msg::HandForceField::ConstSharedPtr value) { field = !value->meta.valid && value->name == "px"; });
+        [&](const msg::HandForceField::ConstSharedPtr &value) { field = !value->meta.valid && value->name == "px"; });
     ASSERT_TRUE(until([&] { return force && sensors && normal && field; }));
     // A later subscriber must also see the unavailable volatile state.
     bool late = false;
     auto l = client->create_subscription<msg::HandTelemetry>(
         topic("state/force"), driver::state_qos(),
-        [&](msg::HandTelemetry::ConstSharedPtr value) { late = !value->meta.valid; });
+        [&](const msg::HandTelemetry::ConstSharedPtr &value) { late = !value->meta.valid; });
     ASSERT_TRUE(until([&] { return late; }));
     EXPECT_EQ(requests.load(), frames);
     EXPECT_EQ(force_generation, sdk->get_health().connection_generation);
@@ -582,11 +583,12 @@ TEST_F(DriverTest, FaultPublicationUsesRealSdkSampleAndDiagnosticsExposeUnknownM
     bool faults = false;
     std::map<std::string, std::string> values;
     auto f = client->create_subscription<msg::HandFaultStatusState>(
-        topic("state/fault_statuses"), driver::state_qos(), [&](msg::HandFaultStatusState::ConstSharedPtr value) {
+        topic("state/fault_statuses"), driver::state_qos(),
+        [&](const msg::HandFaultStatusState::ConstSharedPtr &value) {
             faults = value->meta.valid && value->statuses.size() == 6 && value->statuses[0].mcu_over_temperature;
         });
     auto d = client->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
-        "/diagnostics", rclcpp::QoS(10), [&](diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr array) {
+        "/diagnostics", rclcpp::QoS(10), [&](const diagnostic_msgs::msg::DiagnosticArray::ConstSharedPtr &array) {
             for (const auto &status : array->status) {
                 if (status.name.find("cpp_driver_test_") != std::string::npos) {
                     for (const auto &value : status.values) {
