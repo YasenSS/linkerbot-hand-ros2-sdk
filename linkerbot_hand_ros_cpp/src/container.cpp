@@ -58,6 +58,8 @@ namespace {
             try {
                 return parse(node.Scalar());
             } catch (const hand::ValidationError &) {
+                // A non-JSON YAML scalar is a string, not a parse failure.
+                return node.Scalar();
             }
         }
         return node.Scalar();
