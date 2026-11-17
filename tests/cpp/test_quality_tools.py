@@ -1,13 +1,47 @@
 """Regression checks for the strict, complete Report Card acceptance gate."""
 
 import copy
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 from check_report_complete import validate
 from cppcheck_report import command_database
 
 
 class ReportAcceptanceTests(unittest.TestCase):
+    def test_framework_entrypoints_do_not_hide_dead_helpers(self):
+        source = """
+class Runtime {
+public:
+    virtual void on_configure();
+    static void SetUpTestSuite();
+};
+void Runtime::on_configure() {}
+void Runtime::SetUpTestSuite() {}
+static void never_called() {}
+int main() { return 0; }
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "callbacks.cpp"
+            path.write_text(source)
+            result = subprocess.run(
+                [
+                    "cppcheck",
+                    "--enable=all",
+                    "--library=" + str(Path(__file__).with_name("ros-framework.cfg")),
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("The function 'never_called' is never used", result.stderr)
+        self.assertNotIn("The function 'on_configure' is never used", result.stderr)
+        self.assertNotIn("The function 'SetUpTestSuite' is never used", result.stderr)
+
     def test_cppcheck_preserves_escaped_cmake_definitions_without_mutation(self):
         entry = {
             "directory": "/build",
@@ -19,6 +53,12 @@ class ReportAcceptanceTests(unittest.TestCase):
         self.assertEqual(prepared[0]["command"], entry["command"])
         self.assertNotIn("arguments", prepared[0])
         self.assertIn("arguments", entry)
+        ros_entry = dict(entry, command=entry["command"] + " -isystem /opt/ros/include")
+        self.assertEqual(
+            command_database([ros_entry])[0]["command"],
+            entry["command"] + " -isystem /opt/ros/include",
+        )
+        self.assertIn("-isystem", ros_entry["command"])
         with self.assertRaises(ValueError):
             command_database([{"file": "/source/driver.cpp", "arguments": []}])
 
