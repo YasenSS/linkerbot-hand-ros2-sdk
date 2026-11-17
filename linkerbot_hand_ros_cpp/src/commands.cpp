@@ -158,7 +158,7 @@ namespace linkerbot_hand_ros_cpp {
             transition.stage = command_stage(value.stage);
             transition.stamp = project_time(value.timestamp, now);
             transition.sent_frames = value.sent_frames;
-            result.transitions.push_back(std::move(transition));
+            result.transitions.push_back(transition);
         }
         if (stage == hand::CommandStage::kFailed || stage == hand::CommandStage::kCancelled) {
             result.error_code = stage == hand::CommandStage::kCancelled ? "closed" : "internal";
