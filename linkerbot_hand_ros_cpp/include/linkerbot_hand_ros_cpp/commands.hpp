@@ -3,14 +3,16 @@
 #include <linkerbot_hand_msgs/msg/hand_joint_command.hpp>
 #include <linkerbot_hand_msgs/msg/hand_raw_command.hpp>
 namespace linkerbot_hand_ros_cpp {
-    hand::CommandHandle submit_angles(hand::HandDevice &, const msg::HandJointCommand &);
-    hand::CommandHandle submit_raw(hand::HandDevice &, hand::CommandSemantic, const std::vector<double> &);
-    hand::CommandHandle submit_operation(hand::HandDevice &, hand::DeviceOperation);
-    hand::RawVectorSample read_raw(hand::HandDevice &, hand::TelemetrySemantic, std::chrono::milliseconds timeout);
+    hand::CommandHandle submit_angles(hand::HandDevice & /*device*/, const msg::HandJointCommand & /*command*/);
+    hand::CommandHandle submit_raw(hand::HandDevice & /*device*/, hand::CommandSemantic /*semantic*/,
+                                   const std::vector<double> & /*values*/);
+    hand::CommandHandle submit_operation(hand::HandDevice & /*device*/, hand::DeviceOperation /*operation*/);
+    hand::RawVectorSample read_raw(hand::HandDevice & /*device*/, hand::TelemetrySemantic /*semantic*/,
+                                   std::chrono::milliseconds timeout);
     std::string family_name(hand::CommandFamily value);
     struct CommandContext {
-        uint64_t client_id;
-        uint64_t sequence;
+        uint64_t client_id{};
+        uint64_t sequence{};
         builtin_interfaces::msg::Time published;
         builtin_interfaces::msg::Time received;
     };
