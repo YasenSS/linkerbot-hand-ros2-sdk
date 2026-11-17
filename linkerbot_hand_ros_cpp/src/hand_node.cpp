@@ -336,15 +336,14 @@ namespace linkerbot_hand_ros_cpp {
                 published_identity_timestamp = identity->timestamp;
             }
         }
-        void reject(const std::exception &error, uint64_t client_id, uint64_t sequence,
-                    const builtin_interfaces::msg::Time &stamp, const std::string &family) {
+        void reject(const std::exception &error, const CommandContext &context, const std::string &family) {
             report(error);
             msg::HandCommandStatusBatch batch;
             msg::HandCommandStatus status;
-            status.client_id = client_id;
-            status.user_sequence = sequence;
-            status.publisher_stamp = stamp;
-            status.driver_received_stamp = node.now();
+            status.client_id = context.client_id;
+            status.user_sequence = context.sequence;
+            status.publisher_stamp = context.published;
+            status.driver_received_stamp = context.received;
             status.family = family;
             status.stage = msg::HandCommandStatus::STAGE_FAILED;
             status.error_code = error_code(error);
@@ -437,7 +436,8 @@ namespace linkerbot_hand_ros_cpp {
                         track([&] { return submit_angles(*device, *command); }, command->client_id,
                               command->user_sequence, command->publisher_stamp);
                     } catch (const std::exception &error) {
-                        reject(error, command->client_id, command->user_sequence, command->publisher_stamp,
+                        reject(error,
+                               {command->client_id, command->user_sequence, command->publisher_stamp, node.now()},
                                "angle_target");
                     }
                 }));
@@ -460,7 +460,8 @@ namespace linkerbot_hand_ros_cpp {
                             track([&] { return submit_raw(*device, semantic, command->raw); }, command->client_id,
                                   command->user_sequence, command->publisher_stamp);
                         } catch (const std::exception &error) {
-                            reject(error, command->client_id, command->user_sequence, command->publisher_stamp,
+                            reject(error,
+                                   {command->client_id, command->user_sequence, command->publisher_stamp, node.now()},
                                    semantic_name(semantic));
                         }
                     }));
@@ -633,7 +634,7 @@ namespace linkerbot_hand_ros_cpp {
             };
             for (auto it = tracked.begin(); it != tracked.end();) {
                 auto message =
-                    command_status(it->handle, it->client_id, it->sequence, it->published, it->received, node.now());
+                    command_status(it->handle, {it->client_id, it->sequence, it->published, it->received}, node.now());
                 // Use the same history snapshot for change detection and terminality,
                 // otherwise an ACK arriving between reads could be silently discarded.
                 const bool done = message.stage == msg::HandCommandStatus::STAGE_FAILED ||

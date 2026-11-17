@@ -137,14 +137,13 @@ namespace linkerbot_hand_ros_cpp {
         }
         throw std::logic_error("unknown command family");
     }
-    msg::HandCommandStatus command_status(const hand::CommandHandle &handle, uint64_t client_id, uint64_t sequence,
-                                          const builtin_interfaces::msg::Time &published,
-                                          const builtin_interfaces::msg::Time &received, const rclcpp::Time &now) {
+    msg::HandCommandStatus command_status(const hand::CommandHandle &handle, const CommandContext &context,
+                                          const rclcpp::Time &now) {
         msg::HandCommandStatus result;
-        result.client_id = client_id;
-        result.user_sequence = sequence;
-        result.publisher_stamp = published;
-        result.driver_received_stamp = received;
+        result.client_id = context.client_id;
+        result.user_sequence = context.sequence;
+        result.publisher_stamp = context.published;
+        result.driver_received_stamp = context.received;
         result.command_id = handle.command_id();
         result.family = family_name(handle.family());
         const auto history = handle.history();
