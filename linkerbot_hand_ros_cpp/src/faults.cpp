@@ -71,8 +71,8 @@ namespace linkerbot_hand_ros_cpp {
         if (name == "angles") {
             return caps.supports(hand::TelemetrySemantic::kAngles);
         }
-        const auto found = std::find_if(kStateInterfaces.begin(), kStateInterfaces.end(),
-                                        [&](auto semantic) { return name == semantic_name(semantic); });
+        const auto *const found = std::find_if(kStateInterfaces.begin(), kStateInterfaces.end(),
+                                               [&](auto semantic) { return name == semantic_name(semantic); });
         return found != kStateInterfaces.end() && caps.supports(*found);
     }
 
