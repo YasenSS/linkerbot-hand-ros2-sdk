@@ -1,11 +1,41 @@
 #include "linkerbot_hand_ros_cpp/hand_node.hpp"
+#include "builtin_interfaces/msg/time.hpp"
+#include "diagnostic_msgs/msg/diagnostic_status.hpp"
+#include "diagnostic_msgs/msg/key_value.hpp"
+#include "linkerbot/hand/api/commands.hpp"
+#include "linkerbot/hand/api/device.hpp"
+#include "linkerbot/hand/api/readings.hpp"
+#include "linkerbot/hand/api/snapshot.hpp"
+#include "linkerbot/hand/capabilities.hpp"
+#include "linkerbot/hand/discovery.hpp"
+#include "linkerbot/hand/errors.hpp"
+#include "linkerbot_hand_msgs/msg/hand_capabilities.hpp"
+#include "linkerbot_hand_msgs/msg/hand_command_status.hpp"
+#include "linkerbot_hand_msgs/msg/hand_device_info.hpp"
+#include "linkerbot_hand_msgs/msg/hand_force_field.hpp"
+#include "linkerbot_hand_msgs/msg/hand_joint_command.hpp"
+#include "linkerbot_hand_msgs/msg/hand_joint_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_normal_force_resultant.hpp"
+#include "linkerbot_hand_msgs/msg/hand_raw_command.hpp"
+#include "linkerbot_hand_msgs/msg/hand_tactile_sensor_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_tactile_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_telemetry.hpp"
 #include "linkerbot_hand_ros_cpp/commands.hpp"
+#include "linkerbot_hand_ros_cpp/conversions.hpp"
+#include "linkerbot_hand_ros_cpp/driver_config.hpp"
 #include "linkerbot_hand_ros_cpp/public_contract.hpp"
 #include "linkerbot_hand_ros_cpp/qos.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include <algorithm>
 #include <atomic>
+#include <bits/chrono.h>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
+#include <exception>
+#include <ios>
 #include <limits>
 #include <linkerbot_hand_msgs/msg/hand_command_status_batch.hpp>
 #include <linkerbot_hand_msgs/msg/hand_fault_status_state.hpp>
@@ -17,12 +47,29 @@
 #include <linkerbot_hand_msgs/srv/set_raw_values.hpp>
 #include <linkerbot_hand_msgs/srv/submit_command.hpp>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <optional>
+#include <rclcpp/callback_group.hpp>
 #include <rclcpp/create_publisher.hpp>
+#include <rclcpp/logging.hpp>
+#include <rclcpp/node_interfaces/node_parameters_interface.hpp>
+#include <rclcpp/node_options.hpp>
+#include <rclcpp/parameter.hpp>
+#include <rclcpp/publisher.hpp>
+#include <rclcpp/qos.hpp>
+#include <rclcpp/service.hpp>
+#include <rclcpp/subscription_base.hpp>
+#include <rclcpp/timer.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
+#include <rclcpp_lifecycle/state.hpp>
 #include <shared_mutex>
 #include <sstream>
+#include <string>
 #include <thread>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 namespace linkerbot_hand_ros_cpp {
     namespace srv = linkerbot_hand_msgs::srv;
@@ -72,8 +119,8 @@ namespace linkerbot_hand_ros_cpp {
             std::tuple<uint64_t, uint64_t, bool, bool, bool, hand::TelemetryValueOrigin, hand::TelemetryDelivery>;
         std::map<std::string, Signature> published;
         struct MockPublication {
-            size_t subscribers;
-            uint64_t generation;
+            size_t subscribers{};
+            uint64_t generation{};
             std::chrono::steady_clock::time_point last;
         };
         std::map<std::string, MockPublication> mocked;
@@ -117,7 +164,7 @@ namespace linkerbot_hand_ros_cpp {
         rcl_interfaces::msg::SetParametersResult update_parameters(const std::vector<rclcpp::Parameter> &parameters) {
             rcl_interfaces::msg::SetParametersResult result;
             try {
-                std::unique_lock<std::shared_mutex> lease(gate);
+                std::unique_lock<std::shared_mutex> const lease(gate);
                 for (const auto &value : parameters) {
                     const auto &name = value.get_name();
                     if (name == "use_sim_time") {
@@ -193,7 +240,7 @@ namespace linkerbot_hand_ros_cpp {
                 while (!worker_stop) {
                     bool reconnect = false;
                     {
-                        std::shared_lock<std::shared_mutex> lease(gate, std::try_to_lock);
+                        std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
                         if (lease.owns_lock() && active && device) {
                             reconnect = config.auto_reconnect && !device->get_health().connected();
                             if (!reconnect) {
@@ -208,7 +255,7 @@ namespace linkerbot_hand_ros_cpp {
                         }
                     }
                     if (reconnect && std::chrono::steady_clock::now() >= next_recovery) {
-                        std::unique_lock<std::shared_mutex> lease(gate, std::try_to_lock);
+                        std::unique_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
                         if (lease.owns_lock() && active && device && !worker_stop) {
                             try {
                                 device->recover();
@@ -250,17 +297,17 @@ namespace linkerbot_hand_ros_cpp {
             return rclcpp::create_publisher<T>(node, topic, qos);
         }
         void report(const std::exception &error) {
-            std::lock_guard<std::mutex> lock(error_mutex);
+            std::lock_guard<std::mutex> const lock(error_mutex);
             last_error_code = error_code(error);
             last_error_message = error.what();
             RCLCPP_WARN(node.get_logger(), "%s: %s", last_error_code.c_str(), error.what());
         }
         void clear_error() {
-            std::lock_guard<std::mutex> lock(error_mutex);
+            std::lock_guard<std::mutex> const lock(error_mutex);
             last_error_code.clear();
             last_error_message.clear();
         }
-        void require_active() {
+        void require_active() const {
             if (!active || !device) {
                 throw hand::DeviceNotReadyError("lifecycle node is not active");
             }
@@ -270,7 +317,7 @@ namespace linkerbot_hand_ros_cpp {
             response.message = error.what();
             report(error);
         }
-        std::chrono::milliseconds timeout(double seconds) {
+        std::chrono::milliseconds timeout(double seconds) const {
             const double shutdown = std::chrono::duration<double>(config.device.shutdown_timeout).count();
             if (!std::isfinite(seconds) || seconds <= 0 || seconds >= shutdown / 2.0) {
                 throw hand::ValidationError("timeout_s must be positive and less than half shutdown_timeout_s");
@@ -283,7 +330,7 @@ namespace linkerbot_hand_ros_cpp {
                 [this, callback](const std::shared_ptr<typename Service::Request> request,
                                  std::shared_ptr<typename Service::Response> response) {
                     try {
-                        std::shared_lock<std::shared_mutex> lease(gate, std::try_to_lock);
+                        std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
                         if (!lease.owns_lock()) {
                             throw hand::DeviceNotReadyError("lifecycle transition in progress");
                         }
@@ -302,7 +349,7 @@ namespace linkerbot_hand_ros_cpp {
         uint64_t track(Submit submit, uint64_t client_id = 0, uint64_t sequence = 0,
                        builtin_interfaces::msg::Time stamp = builtin_interfaces::msg::Time()) {
             const auto received = node.now();
-            std::lock_guard<std::mutex> lock(tracker_mutex);
+            std::lock_guard<std::mutex> const lock(tracker_mutex);
             // Reserve tracking capacity BEFORE submitting: never lose an accepted
             // command merely because the ROS result tracker is full.
             if (tracked.size() >= config.max_tracked_commands) {
@@ -428,7 +475,7 @@ namespace linkerbot_hand_ros_cpp {
             subscriptions.push_back(node.create_subscription<msg::HandJointCommand>(
                 "~/command/angles", command_qos(), [this](msg::HandJointCommand::ConstSharedPtr command) {
                     try {
-                        std::shared_lock<std::shared_mutex> lease(gate, std::try_to_lock);
+                        std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
                         if (!lease.owns_lock()) {
                             throw hand::DeviceNotReadyError("lifecycle transition in progress");
                         }
@@ -449,12 +496,12 @@ namespace linkerbot_hand_ros_cpp {
                 subscriptions.push_back(node.create_subscription<msg::HandRawCommand>(
                     "~/command/" + name, command_qos(), [this, semantic](msg::HandRawCommand::ConstSharedPtr command) {
                         try {
-                            std::shared_lock<std::shared_mutex> lease(gate, std::try_to_lock);
+                            std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
                             if (!lease.owns_lock()) {
                                 throw hand::DeviceNotReadyError("lifecycle transition in progress");
                             }
                             require_active();
-                            if (!command->client_id) {
+                            if (command->client_id == 0u) {
                                 throw hand::ValidationError("client_id must be nonzero");
                             }
                             track([&] { return submit_raw(*device, semantic, command->raw); }, command->client_id,
@@ -558,7 +605,7 @@ namespace linkerbot_hand_ros_cpp {
                 [this](const std::shared_ptr<srv::Recover::Request> &request,
                        const std::shared_ptr<srv::Recover::Response> &response) {
                     try {
-                        std::unique_lock<std::shared_mutex> lease(gate);
+                        std::unique_lock<std::shared_mutex> const lease(gate);
                         require_active();
                         const double budget = std::chrono::duration<double>(config.device.shutdown_timeout).count();
                         if (!std::isfinite(request->timeout_s) || request->timeout_s <= 0) {
@@ -624,7 +671,7 @@ namespace linkerbot_hand_ros_cpp {
             return true;
         }
         void publish_status() {
-            std::lock_guard<std::mutex> lock(tracker_mutex);
+            std::lock_guard<std::mutex> const lock(tracker_mutex);
             msg::HandCommandStatusBatch batch;
             auto flush = [&] {
                 if (!batch.statuses.empty()) {
@@ -659,11 +706,11 @@ namespace linkerbot_hand_ros_cpp {
             flush();
         }
         void publish_state() {
-            std::shared_lock<std::shared_mutex> lease(gate, std::try_to_lock);
+            std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
             if (!lease.owns_lock() || !active || !device) {
                 return;
             }
-            std::lock_guard<std::mutex> publication(publication_mutex);
+            std::lock_guard<std::mutex> const publication(publication_mutex);
             try {
                 publish_status();
                 metadata_publish();
@@ -721,8 +768,8 @@ namespace linkerbot_hand_ros_cpp {
                 unavailable_state("stall_protection", stall_pub, stall_message(snapshot, caps),
                                   !unsupported("stall_protection"), generation);
                 if (snapshot.angles && angles_pub &&
-                    !(config.angle_feedback == "query_only" &&
-                      snapshot.angles->meta.delivery == hand::TelemetryDelivery::kCommandResponse) &&
+                    (config.angle_feedback != "query_only" ||
+                     snapshot.angles->meta.delivery != hand::TelemetryDelivery::kCommandResponse) &&
                     changed("angles", snapshot.angles->meta)) {
                     angles_pub->publish(angles(*snapshot.angles, caps, now));
                 }
@@ -758,7 +805,7 @@ namespace linkerbot_hand_ros_cpp {
                 if (snapshot.faults && changed("faults", snapshot.faults->meta)) {
                     const auto pub = telemetry_pubs.find(hand::TelemetrySemantic::kFaults);
                     const auto *cap = caps.telemetry_channel(hand::TelemetrySemantic::kFaults);
-                    if (pub != telemetry_pubs.end() && cap) {
+                    if (pub != telemetry_pubs.end() && (cap != nullptr)) {
                         hand::RawVectorSample sample;
                         sample.raw.assign(snapshot.faults->raw.begin(), snapshot.faults->raw.end());
                         sample.meta = snapshot.faults->meta;
@@ -819,7 +866,7 @@ namespace linkerbot_hand_ros_cpp {
             }
         }
         void publish_diagnostics() {
-            std::shared_lock<std::shared_mutex> lease(gate, std::try_to_lock);
+            std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
             if (!lease.owns_lock() || config.diagnostic_rate_hz == 0) {
                 return;
             }
@@ -897,13 +944,13 @@ namespace linkerbot_hand_ros_cpp {
             } else {
                 const auto snapshot = device->get_snapshot();
                 if (!snapshot.angles || !snapshot.angles->meta.valid || snapshot.angles->meta.stale ||
-                    health.consecutive_errors) {
+                    (health.consecutive_errors != 0u)) {
                     status.level = 1;
                     status.message = "waiting for fresh feedback or SDK I/O recovery";
                 }
             }
             {
-                std::lock_guard<std::mutex> lock(error_mutex);
+                std::lock_guard<std::mutex> const lock(error_mutex);
                 value("recent_error_code", last_error_code.empty() && health.recent_error
                                                ? std::string(hand::error_code_name(health.recent_error->code))
                                                : last_error_code);
@@ -1017,7 +1064,7 @@ namespace linkerbot_hand_ros_cpp {
                 publish_status();
                 metadata_publish();
             } else {
-                std::lock_guard<std::mutex> lock(tracker_mutex);
+                std::lock_guard<std::mutex> const lock(tracker_mutex);
                 tracked.clear();
             }
         }
@@ -1045,14 +1092,14 @@ namespace linkerbot_hand_ros_cpp {
     }
     HandNode::~HandNode() {
         try {
-            std::unique_lock<std::shared_mutex> lease(impl_->gate);
+            std::unique_lock<std::shared_mutex> const lease(impl_->gate);
             impl_->cleanup();
         } catch (const std::exception &error) {
             RCLCPP_ERROR(get_logger(), "driver cleanup: %s", error.what());
         }
     }
-    HandNode::CallbackReturn HandNode::on_configure(const rclcpp_lifecycle::State &) {
-        std::unique_lock<std::shared_mutex> lease(impl_->gate);
+    HandNode::CallbackReturn HandNode::on_configure(const rclcpp_lifecycle::State & /*previous_state*/) {
+        std::unique_lock<std::shared_mutex> const lease(impl_->gate);
         try {
             if (impl_->configured || impl_->device) {
                 throw hand::LifecycleError("cleanup previous configuration first");
@@ -1081,8 +1128,8 @@ namespace linkerbot_hand_ros_cpp {
             return CallbackReturn::FAILURE;
         }
     }
-    HandNode::CallbackReturn HandNode::on_activate(const rclcpp_lifecycle::State &) {
-        std::unique_lock<std::shared_mutex> lease(impl_->gate);
+    HandNode::CallbackReturn HandNode::on_activate(const rclcpp_lifecycle::State & /*previous_state*/) {
+        std::unique_lock<std::shared_mutex> const lease(impl_->gate);
         try {
             if (!impl_->configured) {
                 throw hand::LifecycleError("driver is not configured");
@@ -1119,8 +1166,8 @@ namespace linkerbot_hand_ros_cpp {
             return CallbackReturn::FAILURE;
         }
     }
-    HandNode::CallbackReturn HandNode::on_deactivate(const rclcpp_lifecycle::State &) {
-        std::unique_lock<std::shared_mutex> lease(impl_->gate);
+    HandNode::CallbackReturn HandNode::on_deactivate(const rclcpp_lifecycle::State & /*previous_state*/) {
+        std::unique_lock<std::shared_mutex> const lease(impl_->gate);
         try {
             impl_->close();
             return CallbackReturn::SUCCESS;
@@ -1129,8 +1176,8 @@ namespace linkerbot_hand_ros_cpp {
             return CallbackReturn::ERROR;
         }
     }
-    HandNode::CallbackReturn HandNode::on_cleanup(const rclcpp_lifecycle::State &) {
-        std::unique_lock<std::shared_mutex> lease(impl_->gate);
+    HandNode::CallbackReturn HandNode::on_cleanup(const rclcpp_lifecycle::State & /*previous_state*/) {
+        std::unique_lock<std::shared_mutex> const lease(impl_->gate);
         try {
             impl_->cleanup();
             return CallbackReturn::SUCCESS;
