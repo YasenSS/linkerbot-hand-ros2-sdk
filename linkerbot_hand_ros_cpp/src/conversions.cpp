@@ -1,8 +1,48 @@
 #include "linkerbot_hand_ros_cpp/conversions.hpp"
+#include "builtin_interfaces/msg/time.hpp"
+#include "linkerbot/hand/api/commands.hpp"
+#include "linkerbot/hand/api/readings.hpp"
+#include "linkerbot/hand/capabilities.hpp"
+#include "linkerbot/hand/errors.hpp"
+#include "linkerbot/hand/identity.hpp"
+#include "linkerbot_hand_msgs/msg/command_capability.hpp"
+#include "linkerbot_hand_msgs/msg/force_field_capability.hpp"
+#include "linkerbot_hand_msgs/msg/force_sensor_value.hpp"
+#include "linkerbot_hand_msgs/msg/hand_capabilities.hpp"
+#include "linkerbot_hand_msgs/msg/hand_command_status.hpp"
+#include "linkerbot_hand_msgs/msg/hand_device_info.hpp"
+#include "linkerbot_hand_msgs/msg/hand_force_field.hpp"
+#include "linkerbot_hand_msgs/msg/hand_joint_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_normal_force_resultant.hpp"
+#include "linkerbot_hand_msgs/msg/hand_tactile_field.hpp"
+#include "linkerbot_hand_msgs/msg/hand_tactile_sensor.hpp"
+#include "linkerbot_hand_msgs/msg/hand_tactile_sensor_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_tactile_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_telemetry.hpp"
+#include "linkerbot_hand_msgs/msg/identity_capability.hpp"
+#include "linkerbot_hand_msgs/msg/joint_capability.hpp"
+#include "linkerbot_hand_msgs/msg/numeric_range.hpp"
+#include "linkerbot_hand_msgs/msg/percent_mapping.hpp"
+#include "linkerbot_hand_msgs/msg/sample_metadata.hpp"
+#include "linkerbot_hand_msgs/msg/stall_field_capability.hpp"
+#include "linkerbot_hand_msgs/msg/tactile_matrix.hpp"
+#include "linkerbot_hand_msgs/msg/telemetry_capability.hpp"
+#include "linkerbot_hand_msgs/msg/version_field.hpp"
+#include "linkerbot_hand_ros_cpp/driver_config.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
 #include <limits>
+#include <optional>
+#include <rclcpp/time.hpp>
 #include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 namespace linkerbot_hand_ros_cpp {
     namespace {
@@ -283,7 +323,7 @@ namespace linkerbot_hand_ros_cpp {
         result.revision = "1.5"; // ROS wire schema; independent of SDK capability schema.
         result.identity = identity_message(caps, identity);
         const auto *angle = caps.command(hand::CommandSemantic::kAngles);
-        const auto angle_unit = angle ? angle->raw_unit.value_or("") : std::string_view("");
+        const auto angle_unit = (angle != nullptr) ? angle->raw_unit.value_or("") : std::string_view("");
         for (const auto &value : caps.joints) {
             msg::JointCapability joint;
             joint.index = value.index;
@@ -425,7 +465,7 @@ namespace linkerbot_hand_ros_cpp {
             out.write_supported = caps.supports(command);
             readable = readable && out.read_supported;
             writable = writable && out.write_supported;
-            if (!input) {
+            if (input == nullptr) {
                 continue;
             }
             out.channel_names = strings(input->channels);
@@ -534,7 +574,7 @@ namespace linkerbot_hand_ros_cpp {
                 sensor.encoding = value.encodings[i].value_or("");
             }
             if (i < value.valid_values.size()) {
-                for (bool valid : value.valid_values[i].value_or(std::vector<bool>{})) {
+                for (bool const valid : value.valid_values[i].value_or(std::vector<bool>{})) {
                     sensor.valid_values.push_back(valid);
                 }
             }
@@ -625,7 +665,7 @@ namespace linkerbot_hand_ros_cpp {
         if (const auto *typed = dynamic_cast<const hand::HandError *>(&error)) {
             return std::string(hand::error_code_name(typed->code()));
         }
-        if (dynamic_cast<const std::invalid_argument *>(&error)) {
+        if (dynamic_cast<const std::invalid_argument *>(&error) != nullptr) {
             return "validation";
         }
         return "internal";
