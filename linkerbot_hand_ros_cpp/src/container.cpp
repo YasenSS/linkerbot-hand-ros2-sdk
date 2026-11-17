@@ -109,17 +109,17 @@ namespace {
         address["request_id"] = candidate.address().request_id();
         address["response_id"] = candidate.address().response_id();
         address["is_extended_id"] = candidate.address().extended_id();
-        if (candidate.address().node_id()) {
-            address["node_id"] = *candidate.address().node_id();
+        if (const auto node_id = candidate.address().node_id()) {
+            address["node_id"] = node_id.value();
         }
-        if (candidate.address().host_id()) {
-            address["host_id"] = *candidate.address().host_id();
+        if (const auto host_id = candidate.address().host_id()) {
+            address["host_id"] = host_id.value();
         }
-        if (candidate.identity().serial_number) {
-            result["serial_number"] = *candidate.identity().serial_number;
+        if (const auto serial_number = candidate.identity().serial_number) {
+            result["serial_number"] = serial_number.value();
         }
-        if (candidate.identity().product_code) {
-            result["product_code"] = *candidate.identity().product_code;
+        if (const auto product_code = candidate.identity().product_code) {
+            result["product_code"] = product_code.value();
         }
         return result;
     }

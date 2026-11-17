@@ -450,7 +450,7 @@ TEST(DiscoveryConfiguration, AdapterFieldsMapToRealSdkAndUnknownOptionsReject) {
                                           "/tmp");
     EXPECT_EQ(config.l30_node_ids.at(0), 13);
     EXPECT_EQ(config.pcan.channels.at(0), "PCAN_USBBUS1");
-    EXPECT_EQ(config.pcan.library_path->string(), "/tmp/libpcan.so");
+    EXPECT_EQ(config.pcan.library_path.value_or(std::filesystem::path{}).string(), "/tmp/libpcan.so");
     EXPECT_THROW(driver::apply_discovery_configuration(config, "pcan: {bus_options: {unmapped: 1}}"),
                  hand::UnsupportedOperationError);
     EXPECT_THROW(driver::apply_discovery_configuration(config, "l30_node_ids: [256]"), hand::ValidationError);
