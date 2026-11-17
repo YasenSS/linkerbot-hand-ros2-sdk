@@ -8,6 +8,7 @@ namespace linkerbot_hand_ros_cpp {
     namespace {
         template <typename T> std::vector<std::string> strings(const T &values) {
             std::vector<std::string> result;
+            result.reserve(values.size());
             for (const auto &value : values) {
                 result.emplace_back(value);
             }
