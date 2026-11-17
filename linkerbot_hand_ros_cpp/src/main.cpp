@@ -1,7 +1,10 @@
 #include "linkerbot_hand_ros_cpp/hand_node.hpp"
 #include <exception>
-#include <lifecycle_msgs/msg/transition.hpp>
+#include <memory>
 #include <rclcpp/executors/multi_threaded_executor.hpp>
+#include <rclcpp/logger.hpp>
+#include <rclcpp/logging.hpp>
+#include <rclcpp/utilities.hpp>
 
 int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
