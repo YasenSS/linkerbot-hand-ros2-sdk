@@ -1,11 +1,23 @@
+#include "linkerbot/hand/api/readings.hpp"
+#include "linkerbot/hand/capabilities.hpp"
+#include "linkerbot/hand/errors.hpp"
+#include "linkerbot/hand/fault_status.hpp"
+#include "linkerbot/hand/identity.hpp"
+#include "linkerbot_hand_msgs/msg/hand_fault_status_state.hpp"
+#include "linkerbot_hand_msgs/msg/hand_joint_fault_status.hpp"
 #include "linkerbot_hand_ros_cpp/conversions.hpp"
 #include "linkerbot_hand_ros_cpp/public_contract.hpp"
+#include <cstdint>
 #include <linkerbot/hand/l20/fault.hpp>
 #include <linkerbot/hand/l20lite/fault.hpp>
 #include <linkerbot/hand/l30/fault.hpp>
 #include <linkerbot/hand/l6/fault.hpp>
 #include <linkerbot/hand/o30/fault.hpp>
 #include <linkerbot/hand/o6/fault.hpp>
+#include <optional>
+#include <rclcpp/time.hpp>
+#include <string>
+#include <utility>
 
 namespace linkerbot_hand_ros_cpp {
     bool state_supported(const std::string &name, const hand::DeviceCapabilities &caps,
@@ -25,8 +37,8 @@ namespace linkerbot_hand_ros_cpp {
                    caps.model == hand::Model::kL30;
         }
         const auto *force = caps.telemetry_channel(hand::TelemetrySemantic::kForce);
-        const bool descriptor = force && force->raw_encoding == "o30_tactile_descriptor";
-        const bool matrix = force && force->shape.size() == 3;
+        const bool descriptor = (force != nullptr) && force->raw_encoding == "o30_tactile_descriptor";
+        const bool matrix = (force != nullptr) && force->shape.size() == 3;
         if (name == "tactile") {
             return matrix;
         }
@@ -34,7 +46,7 @@ namespace linkerbot_hand_ros_cpp {
             return descriptor;
         }
         if (name == "force") {
-            return force && !descriptor && !matrix;
+            return (force != nullptr) && !descriptor && !matrix;
         }
         if (name.rfind("force_", 0) == 0) {
             for (const auto &field : caps.force_fields()) {
@@ -66,10 +78,10 @@ namespace linkerbot_hand_ros_cpp {
         msg::HandFaultStatusState result;
         result.meta = metadata(sample.meta, now);
         const auto *channel = caps.telemetry_channel(hand::TelemetrySemantic::kFaults);
-        if (!channel || !state_supported("fault_statuses", caps, identity)) {
+        if ((channel == nullptr) || !state_supported("fault_statuses", caps, identity)) {
             result.meta.valid = false;
             result.meta.stale = true;
-            if (channel && sample.raw.size() == channel->channels.size()) {
+            if ((channel != nullptr) && sample.raw.size() == channel->channels.size()) {
                 result.joint_names.assign(channel->channels.begin(), channel->channels.end());
                 for (auto raw : sample.raw) {
                     msg::HandJointFaultStatus status;
