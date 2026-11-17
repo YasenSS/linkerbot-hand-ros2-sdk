@@ -5,17 +5,21 @@
 #include "linkerbot_hand_ros_cpp/conversions.hpp"
 #include "linkerbot_hand_ros_cpp/driver_config.hpp"
 #include "linkerbot_hand_ros_cpp/hand_node.hpp"
+#include "linkerbot_hand_ros_cpp/posix.h"
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <cstddef>
+#include <cstdlib>
 #include <exception>
-#include <fcntl.h>
 #include <filesystem>
+#include <json/config.h>
+#include <json/forwards.h>
 #include <json/reader.h>
 #include <json/value.h>
 #include <json/writer.h>
 #include <lifecycle_msgs/msg/state.hpp>
+#include <limits>
 #include <memory>
 #include <rclcpp/executors/multi_threaded_executor.hpp>
 #include <rclcpp/logger.hpp>
@@ -31,7 +35,8 @@
 #include <utility>
 #include <vector>
 #include <yaml-cpp/node/node.h>
-#include <yaml-cpp/yaml.h>
+#include <yaml-cpp/node/parse.h>
+#include <yaml-cpp/yaml.h> // IWYU pragma: keep
 
 namespace driver = linkerbot_hand_ros_cpp;
 namespace hand = linkerbot::hand;
