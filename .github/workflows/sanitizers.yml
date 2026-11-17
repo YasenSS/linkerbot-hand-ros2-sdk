@@ -47,7 +47,7 @@ jobs:
           go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           actionlint
   sanitizers:
-    name: ASan and UBSan
+    name: ASan, LSan and UBSan
     runs-on: ubuntu-24.04
     container: ros:jazzy-ros-base
     timeout-minutes: 45
@@ -55,7 +55,7 @@ jobs:
       CC: gcc-13
       CXX: g++-13
       LINKERBOT_ROS_CPP_SANITIZERS: 'ON'
-      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:strict_string_checks=1
+      ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
     defaults:
       run:

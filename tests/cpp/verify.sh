@@ -37,9 +37,9 @@ colcon --log-base "$results_dir/build-log" build \
     "-DLINKERBOT_ROS_CPP_SANITIZERS=$sanitizers"
 # shellcheck source=/dev/null
 source "$results_dir/install/setup.bash"
-# Match the SDK sanitizer policy: fail on ASan/UBSan errors; leak checks are separate.
+# Fail on address, leak and undefined-behavior sanitizer errors.
 if [[ "$sanitizers" == ON ]]; then
-  export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=0:halt_on_error=1:strict_string_checks=1}
+  export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=1:strict_string_checks=1}
   export UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}
 fi
 colcon --log-base "$results_dir/test-log" test \
