@@ -740,6 +740,164 @@ namespace linkerbot_hand_ros_cpp {
             }
             flush();
         }
+        void publish_missing_states(const hand::HandSnapshot &snapshot, const hand::DeviceCapabilities &caps,
+                                    const rclcpp::Time &now) {
+            // An empty SDK snapshot can precede the first telemetry sample. Health
+            // still identifies the active connection generation for mock messages.
+            const auto generation = device->get_health().connection_generation;
+            const auto unavailable = hand::SampleMeta::unavailable(generation);
+            auto unsupported = [&](const std::string &name) {
+                return !state_supported(name, caps, device->get_identity());
+            };
+            msg::HandFaultStatusState missing_faults;
+            missing_faults.meta = metadata(unavailable, now);
+            if (snapshot.faults && unsupported("fault_statuses")) {
+                missing_faults = fault_statuses(*snapshot.faults, caps, device->get_identity(), now);
+            }
+            unavailable_state("fault_statuses", fault_status_pub, missing_faults, !unsupported("fault_statuses"),
+                              generation);
+            for (const auto &item : telemetry_pubs) {
+                msg::HandTelemetry message;
+                message.semantic = semantic_name(item.first);
+                message.meta = metadata(unavailable, now);
+                unavailable_state(message.semantic, item.second, message, caps.supports(item.first), generation);
+            }
+            msg::HandTelemetry missing_force;
+            missing_force.semantic = "force";
+            missing_force.meta = metadata(unavailable, now);
+            unavailable_state("force", force_pub, missing_force, !unsupported("force"), generation);
+            msg::HandTactileState missing_tactile;
+            missing_tactile.meta = metadata(unavailable, now);
+            unavailable_state("tactile", tactile_pub, missing_tactile, !unsupported("tactile"), generation);
+            msg::HandTactileSensorState missing_sensors;
+            missing_sensors.meta = metadata(unavailable, now);
+            unavailable_state("tactile_sensors", sensors_pub, missing_sensors, !unsupported("tactile_sensors"),
+                              generation);
+            msg::HandNormalForceResultant missing_normal;
+            missing_normal.meta = metadata(unavailable, now);
+            unavailable_state("normal_force_resultant", normal_pub, missing_normal,
+                              !unsupported("normal_force_resultant"), generation);
+            for (const auto &item : field_pubs) {
+                msg::HandForceField message;
+                message.name = item.first;
+                message.meta = metadata(unavailable, now);
+                const bool observed =
+                    snapshot.force && std::any_of(snapshot.force->fields.begin(), snapshot.force->fields.end(),
+                                                  [&](const auto &field) { return field.name == item.first; });
+                unavailable_state("force_" + item.first, item.second, message,
+                                  observed || !unsupported("force_" + item.first), generation);
+            }
+            unavailable_state("stall_protection", stall_pub, stall_message(snapshot, caps),
+                              !unsupported("stall_protection"), generation);
+        }
+        void publish_joint_samples(const hand::HandSnapshot &snapshot, const hand::DeviceCapabilities &caps,
+                                   const rclcpp::Time &now) {
+            if (snapshot.angles && angles_pub &&
+                (config.angle_feedback != "query_only" ||
+                 snapshot.angles->meta.delivery != hand::TelemetryDelivery::kCommandResponse) &&
+                changed("angles", snapshot.angles->meta)) {
+                angles_pub->publish(angles(*snapshot.angles, caps, now));
+            }
+            auto raw = [&](const auto &sample, hand::TelemetrySemantic semantic) {
+                const auto pub = telemetry_pubs.find(semantic);
+                const auto *cap = caps.telemetry_channel(semantic);
+                if (sample && cap && pub != telemetry_pubs.end() && changed(semantic_name(semantic), sample->meta)) {
+                    pub->second->publish(telemetry(*sample, *cap, now));
+                }
+            };
+            raw(snapshot.measured_speeds, hand::TelemetrySemantic::kMeasuredSpeeds);
+            raw(snapshot.configured_speeds, hand::TelemetrySemantic::kConfiguredSpeeds);
+            raw(snapshot.configured_accelerations, hand::TelemetrySemantic::kConfiguredAccelerations);
+            raw(snapshot.currents, hand::TelemetrySemantic::kCurrents);
+            raw(snapshot.current_limits, hand::TelemetrySemantic::kCurrentLimits);
+            raw(snapshot.position_kp, hand::TelemetrySemantic::kPositionKp);
+            raw(snapshot.position_kd, hand::TelemetrySemantic::kPositionKd);
+            raw(snapshot.torque_kd, hand::TelemetrySemantic::kTorqueKd);
+            raw(snapshot.torques, hand::TelemetrySemantic::kTorques);
+            raw(snapshot.torque_limits, hand::TelemetrySemantic::kTorqueLimits);
+            raw(snapshot.temperatures, hand::TelemetrySemantic::kTemperatures);
+            raw(snapshot.voltages, hand::TelemetrySemantic::kVoltages);
+            raw(snapshot.motion_times, hand::TelemetrySemantic::kMotionTimes);
+            raw(snapshot.limit_compensations, hand::TelemetrySemantic::kLimitCompensations);
+            raw(snapshot.stall_detection_times, hand::TelemetrySemantic::kStallDetectionTimes);
+            raw(snapshot.stall_thresholds, hand::TelemetrySemantic::kStallThresholds);
+            raw(snapshot.stall_hold_currents, hand::TelemetrySemantic::kStallHoldCurrents);
+        }
+        void publish_fault_samples(const hand::HandSnapshot &snapshot, const hand::DeviceCapabilities &caps,
+                                   const rclcpp::Time &now) {
+            if (snapshot.faults && state_supported("fault_statuses", caps, device->get_identity()) &&
+                changed("fault_statuses", snapshot.faults->meta)) {
+                fault_status_pub->publish(fault_statuses(*snapshot.faults, caps, device->get_identity(), now));
+            }
+            if (snapshot.faults && changed("faults", snapshot.faults->meta)) {
+                const auto pub = telemetry_pubs.find(hand::TelemetrySemantic::kFaults);
+                const auto *cap = caps.telemetry_channel(hand::TelemetrySemantic::kFaults);
+                if (pub != telemetry_pubs.end() && (cap != nullptr)) {
+                    hand::RawVectorSample sample;
+                    sample.raw.assign(snapshot.faults->raw.begin(), snapshot.faults->raw.end());
+                    sample.meta = snapshot.faults->meta;
+                    pub->second->publish(telemetry(sample, *cap, now));
+                }
+            }
+        }
+        void publish_force_payload(const hand::ForceSample &sample, const hand::DeviceCapabilities &caps,
+                                   const rclcpp::Time &now) {
+            if (changed("force", sample.meta)) {
+                if (tactile_pub && !sample.tactile.empty()) {
+                    if (const auto *cap = caps.telemetry_channel(hand::TelemetrySemantic::kForce)) {
+                        tactile_pub->publish(tactile(sample, *cap, now));
+                    }
+                }
+                if (sensors_pub && !sample.sensors.empty()) {
+                    sensors_pub->publish(sensors(sample, now));
+                }
+                if (force_pub && state_supported("force", caps) && sample.tactile.empty() && sample.sensors.empty()) {
+                    if (const auto *cap = caps.telemetry_channel(hand::TelemetrySemantic::kForce)) {
+                        hand::RawVectorSample vector;
+                        vector.raw.assign(sample.raw.begin(), sample.raw.end());
+                        vector.meta = sample.meta;
+                        force_pub->publish(telemetry(vector, *cap, now));
+                    }
+                }
+            }
+        }
+        void publish_force_samples(const hand::HandSnapshot &snapshot, const hand::DeviceCapabilities &caps,
+                                   const rclcpp::Time &now) {
+            if (snapshot.force) {
+                const auto &sample = *snapshot.force;
+                publish_force_payload(sample, caps, now);
+                for (const auto &field : sample.fields) {
+                    const auto found = field_pubs.find(field.name);
+                    if (found != field_pubs.end() && changed("force/" + field.name, field.meta)) {
+                        found->second->publish(force_field(field, now));
+                    }
+                }
+            }
+        }
+        void publish_other_samples(const hand::HandSnapshot &snapshot, const hand::DeviceCapabilities &caps,
+                                   const rclcpp::Time &now) {
+            if (normal_pub && snapshot.normal_force_resultant &&
+                changed("normal_force_resultant", snapshot.normal_force_resultant->meta)) {
+                normal_pub->publish(normal_force(*snapshot.normal_force_resultant, now));
+            }
+            if (stall_pub &&
+                (snapshot.stall_detection_times || snapshot.stall_thresholds || snapshot.stall_hold_currents)) {
+                // Do not short-circuit: record all three independent signatures.
+                bool updated = false;
+                if (snapshot.stall_detection_times) {
+                    updated |= changed("stall/time", snapshot.stall_detection_times->meta);
+                }
+                if (snapshot.stall_thresholds) {
+                    updated |= changed("stall/threshold", snapshot.stall_thresholds->meta);
+                }
+                if (snapshot.stall_hold_currents) {
+                    updated |= changed("stall/current", snapshot.stall_hold_currents->meta);
+                }
+                if (updated) {
+                    stall_pub->publish(stall_message(snapshot, caps));
+                }
+            }
+        }
         void publish_state() {
             std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
             if (!lease.owns_lock() || !active || !device) {
@@ -755,147 +913,11 @@ namespace linkerbot_hand_ros_cpp {
                 const auto snapshot = device->get_snapshot();
                 const auto caps = device->get_capabilities();
                 const auto now = node.now();
-                // An empty SDK snapshot can precede the first telemetry sample. Health
-                // still identifies the active connection generation for mock messages.
-                const auto generation = device->get_health().connection_generation;
-                const auto unavailable = hand::SampleMeta::unavailable(generation);
-                auto unsupported = [&](const std::string &name) {
-                    return !state_supported(name, caps, device->get_identity());
-                };
-                msg::HandFaultStatusState missing_faults;
-                missing_faults.meta = metadata(unavailable, now);
-                if (snapshot.faults && unsupported("fault_statuses")) {
-                    missing_faults = fault_statuses(*snapshot.faults, caps, device->get_identity(), now);
-                }
-                unavailable_state("fault_statuses", fault_status_pub, missing_faults, !unsupported("fault_statuses"),
-                                  generation);
-                for (const auto &item : telemetry_pubs) {
-                    msg::HandTelemetry message;
-                    message.semantic = semantic_name(item.first);
-                    message.meta = metadata(unavailable, now);
-                    unavailable_state(message.semantic, item.second, message, caps.supports(item.first), generation);
-                }
-                msg::HandTelemetry missing_force;
-                missing_force.semantic = "force";
-                missing_force.meta = metadata(unavailable, now);
-                unavailable_state("force", force_pub, missing_force, !unsupported("force"), generation);
-                msg::HandTactileState missing_tactile;
-                missing_tactile.meta = metadata(unavailable, now);
-                unavailable_state("tactile", tactile_pub, missing_tactile, !unsupported("tactile"), generation);
-                msg::HandTactileSensorState missing_sensors;
-                missing_sensors.meta = metadata(unavailable, now);
-                unavailable_state("tactile_sensors", sensors_pub, missing_sensors, !unsupported("tactile_sensors"),
-                                  generation);
-                msg::HandNormalForceResultant missing_normal;
-                missing_normal.meta = metadata(unavailable, now);
-                unavailable_state("normal_force_resultant", normal_pub, missing_normal,
-                                  !unsupported("normal_force_resultant"), generation);
-                for (const auto &item : field_pubs) {
-                    msg::HandForceField message;
-                    message.name = item.first;
-                    message.meta = metadata(unavailable, now);
-                    const bool observed =
-                        snapshot.force && std::any_of(snapshot.force->fields.begin(), snapshot.force->fields.end(),
-                                                      [&](const auto &field) { return field.name == item.first; });
-                    unavailable_state("force_" + item.first, item.second, message,
-                                      observed || !unsupported("force_" + item.first), generation);
-                }
-                unavailable_state("stall_protection", stall_pub, stall_message(snapshot, caps),
-                                  !unsupported("stall_protection"), generation);
-                if (snapshot.angles && angles_pub &&
-                    (config.angle_feedback != "query_only" ||
-                     snapshot.angles->meta.delivery != hand::TelemetryDelivery::kCommandResponse) &&
-                    changed("angles", snapshot.angles->meta)) {
-                    angles_pub->publish(angles(*snapshot.angles, caps, now));
-                }
-                auto raw = [&](const auto &sample, hand::TelemetrySemantic semantic) {
-                    const auto pub = telemetry_pubs.find(semantic);
-                    const auto *cap = caps.telemetry_channel(semantic);
-                    if (sample && cap && pub != telemetry_pubs.end() &&
-                        changed(semantic_name(semantic), sample->meta)) {
-                        pub->second->publish(telemetry(*sample, *cap, now));
-                    }
-                };
-                raw(snapshot.measured_speeds, hand::TelemetrySemantic::kMeasuredSpeeds);
-                raw(snapshot.configured_speeds, hand::TelemetrySemantic::kConfiguredSpeeds);
-                raw(snapshot.configured_accelerations, hand::TelemetrySemantic::kConfiguredAccelerations);
-                raw(snapshot.currents, hand::TelemetrySemantic::kCurrents);
-                raw(snapshot.current_limits, hand::TelemetrySemantic::kCurrentLimits);
-                raw(snapshot.position_kp, hand::TelemetrySemantic::kPositionKp);
-                raw(snapshot.position_kd, hand::TelemetrySemantic::kPositionKd);
-                raw(snapshot.torque_kd, hand::TelemetrySemantic::kTorqueKd);
-                raw(snapshot.torques, hand::TelemetrySemantic::kTorques);
-                raw(snapshot.torque_limits, hand::TelemetrySemantic::kTorqueLimits);
-                raw(snapshot.temperatures, hand::TelemetrySemantic::kTemperatures);
-                raw(snapshot.voltages, hand::TelemetrySemantic::kVoltages);
-                raw(snapshot.motion_times, hand::TelemetrySemantic::kMotionTimes);
-                raw(snapshot.limit_compensations, hand::TelemetrySemantic::kLimitCompensations);
-                raw(snapshot.stall_detection_times, hand::TelemetrySemantic::kStallDetectionTimes);
-                raw(snapshot.stall_thresholds, hand::TelemetrySemantic::kStallThresholds);
-                raw(snapshot.stall_hold_currents, hand::TelemetrySemantic::kStallHoldCurrents);
-                if (snapshot.faults && state_supported("fault_statuses", caps, device->get_identity()) &&
-                    changed("fault_statuses", snapshot.faults->meta)) {
-                    fault_status_pub->publish(fault_statuses(*snapshot.faults, caps, device->get_identity(), now));
-                }
-                if (snapshot.faults && changed("faults", snapshot.faults->meta)) {
-                    const auto pub = telemetry_pubs.find(hand::TelemetrySemantic::kFaults);
-                    const auto *cap = caps.telemetry_channel(hand::TelemetrySemantic::kFaults);
-                    if (pub != telemetry_pubs.end() && (cap != nullptr)) {
-                        hand::RawVectorSample sample;
-                        sample.raw.assign(snapshot.faults->raw.begin(), snapshot.faults->raw.end());
-                        sample.meta = snapshot.faults->meta;
-                        pub->second->publish(telemetry(sample, *cap, now));
-                    }
-                }
-                if (snapshot.force) {
-                    const auto &sample = *snapshot.force;
-                    if (changed("force", sample.meta)) {
-                        if (tactile_pub && !sample.tactile.empty()) {
-                            if (const auto *cap = caps.telemetry_channel(hand::TelemetrySemantic::kForce)) {
-                                tactile_pub->publish(tactile(sample, *cap, now));
-                            }
-                        }
-                        if (sensors_pub && !sample.sensors.empty()) {
-                            sensors_pub->publish(sensors(sample, now));
-                        }
-                        if (force_pub && state_supported("force", caps) && sample.tactile.empty() &&
-                            sample.sensors.empty()) {
-                            if (const auto *cap = caps.telemetry_channel(hand::TelemetrySemantic::kForce)) {
-                                hand::RawVectorSample vector;
-                                vector.raw.assign(sample.raw.begin(), sample.raw.end());
-                                vector.meta = sample.meta;
-                                force_pub->publish(telemetry(vector, *cap, now));
-                            }
-                        }
-                    }
-                    for (const auto &field : sample.fields) {
-                        const auto found = field_pubs.find(field.name);
-                        if (found != field_pubs.end() && changed("force/" + field.name, field.meta)) {
-                            found->second->publish(force_field(field, now));
-                        }
-                    }
-                }
-                if (normal_pub && snapshot.normal_force_resultant &&
-                    changed("normal_force_resultant", snapshot.normal_force_resultant->meta)) {
-                    normal_pub->publish(normal_force(*snapshot.normal_force_resultant, now));
-                }
-                if (stall_pub &&
-                    (snapshot.stall_detection_times || snapshot.stall_thresholds || snapshot.stall_hold_currents)) {
-                    // Do not short-circuit: record all three independent signatures.
-                    bool updated = false;
-                    if (snapshot.stall_detection_times) {
-                        updated |= changed("stall/time", snapshot.stall_detection_times->meta);
-                    }
-                    if (snapshot.stall_thresholds) {
-                        updated |= changed("stall/threshold", snapshot.stall_thresholds->meta);
-                    }
-                    if (snapshot.stall_hold_currents) {
-                        updated |= changed("stall/current", snapshot.stall_hold_currents->meta);
-                    }
-                    if (updated) {
-                        stall_pub->publish(stall_message(snapshot, caps));
-                    }
-                }
+                publish_missing_states(snapshot, caps, now);
+                publish_joint_samples(snapshot, caps, now);
+                publish_fault_samples(snapshot, caps, now);
+                publish_force_samples(snapshot, caps, now);
+                publish_other_samples(snapshot, caps, now);
             } catch (const std::exception &error) {
                 report(error);
             }
