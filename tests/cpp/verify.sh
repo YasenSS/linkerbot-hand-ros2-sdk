@@ -11,6 +11,7 @@ transport_source=$(realpath "${2}")
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 results_dir=${3:-"${repo_root}/reports/cpp-${ROS_DISTRO}"}
 sanitizers=${LINKERBOT_ROS_CPP_SANITIZERS:-OFF}
+tsan=${LINKERBOT_ROS_CPP_TSAN:-OFF}
 mkdir -p "$results_dir"
 results_dir=$(realpath "$results_dir")
 for source_dir in "$hand_source" "$transport_source"; do
@@ -34,13 +35,17 @@ colcon --log-base "$results_dir/build-log" build \
     -DPython3_EXECUTABLE=/usr/bin/python3 -DCMAKE_BUILD_TYPE=Debug \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DLINKERBOT_ROS_CPP_WARNINGS_AS_ERRORS=ON \
-    "-DLINKERBOT_ROS_CPP_SANITIZERS=$sanitizers"
+    "-DLINKERBOT_ROS_CPP_SANITIZERS=$sanitizers" \
+    "-DLINKERBOT_ROS_CPP_TSAN=$tsan"
 # shellcheck source=/dev/null
 source "$results_dir/install/setup.bash"
-# Fail on address, leak and undefined-behavior sanitizer errors.
+# Leak detection runs through ASan; TSan uses a separate build.
 if [[ "$sanitizers" == ON ]]; then
   export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=1:strict_string_checks=1}
   export UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}
+fi
+if [[ "$tsan" == ON ]]; then
+  export TSAN_OPTIONS=${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}
 fi
 colcon --log-base "$results_dir/test-log" test \
   --base-paths "$repo_root/linkerbot_hand_msgs" "$repo_root/linkerbot_hand_ros_cpp" \
