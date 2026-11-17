@@ -476,8 +476,6 @@ namespace linkerbot_hand_ros_cpp {
             }
             if (section["linux_channels"]) {
                 config.minicanfd.channels.clear();
-            }
-            if (section["linux_channels"]) {
                 for (const auto &entry : section["linux_channels"]) {
                     for (const auto &channel : entry.second) {
                         config.minicanfd.channels.push_back({entry.first.as<uint32_t>(), channel.as<uint32_t>()});
