@@ -1,0 +1,166 @@
+{
+  "model": {
+    "default": "l6",
+    "type": "str"
+  },
+  "side": {
+    "default": "left",
+    "type": "str"
+  },
+  "transport_json": {
+    "default": "{\"backend\":\"socketcan\",\"channel\":\"can0\"}",
+    "type": "str"
+  },
+  "command_rate_hz": {
+    "default": "250.0",
+    "type": "float"
+  },
+  "discrete_queue_capacity": {
+    "default": "16",
+    "type": "int"
+  },
+  "mailbox_capacity": {
+    "default": "256",
+    "type": "int"
+  },
+  "route_queue_capacity": {
+    "default": "256",
+    "type": "int"
+  },
+  "identity_timeout_s": {
+    "default": "1.0",
+    "type": "float"
+  },
+  "transaction_timeout_s": {
+    "default": "0.1",
+    "type": "float"
+  },
+  "shutdown_timeout_s": {
+    "default": "2.0",
+    "type": "float"
+  },
+  "auto_reconnect": {
+    "default": "false",
+    "type": "bool"
+  },
+  "reconnect_initial_delay_s": {
+    "default": "0.1",
+    "type": "float"
+  },
+  "reconnect_max_delay_s": {
+    "default": "2.0",
+    "type": "float"
+  },
+  "recovery_max_attempts": {
+    "default": "1",
+    "type": "int"
+  },
+  "recovery_timeout_s": {
+    "default": "2.0",
+    "type": "float"
+  },
+  "recovery_retry_delay_s": {
+    "default": "0.1",
+    "type": "float"
+  },
+  "publish_rate_hz": {
+    "default": "100.0",
+    "type": "float"
+  },
+  "diagnostic_rate_hz": {
+    "default": "1.0",
+    "type": "float"
+  },
+  "angles_hz": {
+    "default": "100.0",
+    "type": "float"
+  },
+  "angle_feedback": {
+    "default": "query_only",
+    "type": "str"
+  },
+  "speeds_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "force_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "force_fn_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "force_fns_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "force_ft_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "force_fts_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "force_fd_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "force_fds_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "force_px_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "temperature_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "current_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "faults_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "torques_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "voltage_hz": {
+    "default": "0.0",
+    "type": "float"
+  },
+  "channel": {
+    "default": "can0",
+    "type": "str"
+  },
+  "address": {
+    "default": "-1",
+    "type": "int"
+  },
+  "host_address": {
+    "default": "-1",
+    "type": "int"
+  },
+  "angle_mapping_path": {
+    "default": "",
+    "type": "str"
+  },
+  "command_timeout_s": {
+    "default": "0.1",
+    "type": "float"
+  },
+  "max_tracked_commands": {
+    "default": "1024",
+    "type": "int"
+  },
+  "discovery_timeout_s": {
+    "default": "10.0",
+    "type": "float"
+  }
+}

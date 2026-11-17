@@ -1,0 +1,16 @@
+/linkerbot_hand_container:
+  ros__parameters:
+    device_namespaces: [l6_left, o6_right]
+    autostart: false
+/l6_left/linkerbot_hand:
+  ros__parameters:
+    model: l6
+    side: left
+    transport_json: '{"backend":"socketcan","channel":"can0"}'
+    angle_feedback: query_only
+/o6_right/linkerbot_hand:
+  ros__parameters:
+    model: o6
+    side: right
+    transport_json: '{"backend":"socketcan","channel":"can1"}'
+    angle_feedback: query_only

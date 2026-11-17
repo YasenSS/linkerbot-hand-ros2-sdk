@@ -1,0 +1,91 @@
+cmake_minimum_required(VERSION 3.16)
+project(linkerbot_hand_ros_cpp VERSION 2.0.0 LANGUAGES CXX)
+
+# Keep diagnostics local to this package; source SDKs inherit sanitizer flags.
+option(LINKERBOT_ROS_CPP_SANITIZERS "Instrument the driver and paired SDKs with ASan/UBSan" OFF)
+option(LINKERBOT_ROS_CPP_WARNINGS_AS_ERRORS "Reject compiler warnings in package targets" OFF)
+if(LINKERBOT_ROS_CPP_SANITIZERS)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    message(FATAL_ERROR "ASan/UBSan require GCC or Clang")
+  endif()
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
+find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_lifecycle REQUIRED)
+find_package(rcl_interfaces REQUIRED)
+find_package(lifecycle_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
+find_package(linkerbot_hand_msgs REQUIRED)
+find_package(jsoncpp CONFIG REQUIRED)
+find_package(yaml-cpp REQUIRED)
+
+# An installed SDK is the default. An explicit checkout is useful for paired
+# development, and keeps non-ROS SDK sources outside the colcon source tree.
+set(LINKERBOT_HAND_SOURCE_DIR "" CACHE PATH "Optional C++ hand SDK source checkout")
+if(LINKERBOT_HAND_SOURCE_DIR)
+  set(LINKERBOT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(LINKERBOT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(LINKERBOT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${LINKERBOT_HAND_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/sdk")
+else()
+  find_package(linkerbot-hand-cpp 0.3 CONFIG REQUIRED)
+endif()
+
+add_library(hand_driver STATIC
+  src/driver_config.cpp src/container_configuration.cpp src/conversions.cpp src/faults.cpp src/commands.cpp src/hand_node.cpp)
+target_compile_features(hand_driver PUBLIC cxx_std_17)
+target_include_directories(hand_driver PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_link_libraries(hand_driver PUBLIC linkerbot::cpp-sdk jsoncpp_lib yaml-cpp)
+ament_target_dependencies(hand_driver PUBLIC rclcpp rclcpp_lifecycle rcl_interfaces
+  lifecycle_msgs diagnostic_msgs builtin_interfaces linkerbot_hand_msgs)
+
+add_executable(hand_node src/main.cpp)
+target_link_libraries(hand_node PRIVATE hand_driver)
+add_executable(hand_container src/container.cpp)
+target_link_libraries(hand_container PRIVATE hand_driver)
+install(TARGETS hand_node hand_container DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY launch config docs DESTINATION share/${PROJECT_NAME})
+install(FILES README.md LICENSE DESTINATION share/${PROJECT_NAME})
+ament_python_install_package(${PROJECT_NAME})
+install(PROGRAMS scripts/angle_command scripts/angle_controller scripts/state_monitor
+  scripts/frequency_benchmark DESTINATION lib/${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_gtest(test_driver test/test_driver.cpp)
+  target_link_libraries(test_driver hand_driver)
+  set_tests_properties(test_driver PROPERTIES
+    ENVIRONMENT "ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=/tmp/linkerbot-cpp-test-logs"
+    TIMEOUT 90)
+  ament_add_pytest_test(test_launch test/test_launch.py
+    TIMEOUT 60 ENV "ROS_LOCALHOST_ONLY=1" "ROS_LOG_DIR=/tmp/linkerbot-cpp-launch-test-logs")
+  ament_add_pytest_test(test_configuration test/test_configuration.py TIMEOUT 30)
+  ament_add_pytest_test(test_contract test/test_contract.py
+    TIMEOUT 90 ENV "ROS_LOCALHOST_ONLY=1" "ROS_LOG_DIR=/tmp/linkerbot-cpp-contract-test-logs")
+endif()
+set(driver_targets hand_driver hand_node hand_container)
+if(TARGET test_driver)
+  list(APPEND driver_targets test_driver)
+endif()
+foreach(driver_target IN LISTS driver_targets)
+  if(MSVC)
+    target_compile_options(${driver_target} PRIVATE /W4)
+    if(LINKERBOT_ROS_CPP_WARNINGS_AS_ERRORS)
+      target_compile_options(${driver_target} PRIVATE /WX)
+    endif()
+  else()
+    target_compile_options(${driver_target} PRIVATE -Wall -Wextra -Wpedantic)
+    if(LINKERBOT_ROS_CPP_WARNINGS_AS_ERRORS)
+      target_compile_options(${driver_target} PRIVATE -Werror)
+    endif()
+  endif()
+endforeach()
+ament_package()

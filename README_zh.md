@@ -2,13 +2,19 @@
 
 [English](README.md) | 简体中文
 
-本仓库包含三个可由 ROS 2 独立发现的 package：
+本仓库包含四个可由 ROS 2 独立发现的 package：
 
 - [`linkerbot_hand_msgs`](./linkerbot_hand_msgs)：类型化消息和服务。
 - [`linkerbot_hand_ros`](./linkerbot_hand_ros)：Lifecycle 驱动和配套工具。
+- [`linkerbot_hand_ros_cpp`](./linkerbot_hand_ros_cpp)：基于 C++ SDK 的 Lifecycle 驱动，
+  复用消息和服务；C++ 构建、启动和验证见该包 README。
 - [`linkerbot_hand_gui`](./linkerbot_hand_gui)：O6 URDF 关节滑块预览和安全控制桥。
 
 ## 快速启动
+
+以下为 Python 驱动的启动路径。使用 C++ SDK 时请按
+[`C++ 驱动说明`](linkerbot_hand_ros_cpp/README.md)构建消息包与 C++ 驱动。
+同一只手选择一个驱动连接。
 
 Ubuntu 22.04 使用 ROS 2 Humble，Ubuntu 24.04 使用 Jazzy；依赖和本仓库使用最新
 `main`。使用对应的系统 Python，各 ROS 发行版使用独立工作空间。

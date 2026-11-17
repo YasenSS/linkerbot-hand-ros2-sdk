@@ -1,0 +1,18 @@
+{
+  "mode": "full",
+  "compile_commands": "reports/cpp/quality/compile_commands.json",
+  "exclude": [
+    ".git", "build", "dist", "install", "log", "reports", "external",
+    "vendor", "third_party", "generated", ".ruff_cache",
+    ".cppreportcard", ".github/cppreportcard"
+  ],
+  "tidy_checks": "-*,clang-analyzer-*,bugprone-*",
+  "format_style": "LLVM",
+  "timeout_seconds": 300,
+  "jobs": 2,
+  "tools": {
+    "clang-format": "clang-format",
+    "clang-tidy": "clang-tidy",
+    "cppcheck": "tests/cpp/cppcheck-report.sh"
+  }
+}

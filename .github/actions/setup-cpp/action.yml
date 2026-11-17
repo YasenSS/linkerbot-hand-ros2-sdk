@@ -1,0 +1,55 @@
+name: Set up ROS C++ validation
+description: Prepare the tested SDK sources and ROS Jazzy build and analysis tools.
+inputs:
+  hand-repository:
+    description: Paired Hand SDK repository
+    required: true
+  hand-ref:
+    description: Tested Hand SDK revision
+    required: true
+  transport-repository:
+    description: Paired Transport SDK repository
+    required: true
+  transport-ref:
+    description: Tested Transport SDK revision
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Check out hand SDK
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.hand-repository }}
+        ref: ${{ inputs.hand-ref }}
+        path: external/linkerbot-hand-cpp-sdk
+        persist-credentials: false
+    - name: Check out communication library
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: ${{ inputs.transport-repository }}
+        ref: ${{ inputs.transport-ref }}
+        path: external/linkerbot-transport-cpp
+        persist-credentials: false
+    - name: Install build and analysis tools
+      shell: bash
+      run: |
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          build-essential cmake ninja-build gcc-13 g++-13 clang-18 clang-format-18 clang-tidy-18 \
+          cppcheck python3-colcon-common-extensions
+        source /opt/ros/jazzy/setup.bash
+        rosdep update
+        rosdep install --from-paths linkerbot_hand_msgs linkerbot_hand_ros_cpp \
+          --ignore-src --rosdistro jazzy -y
+        mkdir -p /tmp/cpp-quality-bin
+        ln -s /usr/bin/clang-format-18 /tmp/cpp-quality-bin/clang-format
+        ln -s /usr/bin/clang-tidy-18 /tmp/cpp-quality-bin/clang-tidy
+        echo /tmp/cpp-quality-bin >> "$GITHUB_PATH"
+        python3 -c 'import yaml; import rclpy'
+    - name: Record tested source revisions
+      shell: bash
+      run: |
+        mkdir -p reports/cpp
+        git -c safe.directory="$PWD" rev-parse HEAD > reports/cpp/ros-sha.txt
+        git -c safe.directory="$PWD/external/linkerbot-hand-cpp-sdk" -C external/linkerbot-hand-cpp-sdk rev-parse HEAD > reports/cpp/hand-sha.txt
+        git -c safe.directory="$PWD/external/linkerbot-transport-cpp" -C external/linkerbot-transport-cpp rev-parse HEAD > reports/cpp/transport-sha.txt

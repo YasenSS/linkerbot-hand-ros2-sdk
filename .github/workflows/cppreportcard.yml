@@ -1,0 +1,88 @@
+name: C++ Report Card
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cppreportcard-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HAND_REPOSITORY: ${{ vars.LINKERBOT_HAND_CPP_REPOSITORY || format('{0}/linkerbot-hand-cpp-sdk', github.repository_owner) }}
+  HAND_REF: ${{ vars.LINKERBOT_HAND_CPP_REF || 'd88813f302553f056bfdd71b40b037738bd6975a' }}
+  COMM_REPOSITORY: ${{ vars.LINKERBOT_COMM_REPOSITORY || format('{0}/linkerbot-transport-cpp', github.repository_owner) }}
+  COMM_REF: ${{ vars.LINKERBOT_COMM_REF || '0e190032d65ed0b315337b45b3779cf4f650ed68' }}
+
+jobs:
+  report:
+    name: Full ROS C++ report (ubuntu-24.04-arm)
+    runs-on: ubuntu-24.04-arm
+    container: ros:jazzy-ros-base
+    timeout-minutes: 60
+    env:
+      CC: clang-18
+      CXX: clang++-18
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cpp
+        with:
+          hand-repository: ${{ env.HAND_REPOSITORY }}
+          hand-ref: ${{ env.HAND_REF }}
+          transport-repository: ${{ env.COMM_REPOSITORY }}
+          transport-ref: ${{ env.COMM_REF }}
+      - name: Build and test all ROS C++ targets with compiler warnings as errors
+        id: inputs
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          bash tests/cpp/verify.sh external/linkerbot-hand-cpp-sdk \
+            external/linkerbot-transport-cpp "$PWD/reports/cpp"
+      - name: Require complete format, naming, static analysis and standalone headers
+        id: audit
+        if: ${{ !cancelled() && steps.inputs.outcome == 'success' }}
+        run: |
+          python3 tests/cpp/quality.py reports/cpp/build/linkerbot_hand_ros_cpp \
+            --output reports/cpp/quality
+      - name: Generate complete quality report
+        id: report
+        if: ${{ !cancelled() && steps.inputs.outcome == 'success' && hashFiles('reports/cpp/quality/compile_commands.json') != '' }}
+        uses: soulteary/cppreportcard-action@8de72292324308064276a8feca167d543828d218 # v1.0.4
+        with:
+          mode: full
+          config: .cppreportcard.json
+          compile_commands: reports/cpp/quality/compile_commands.json
+          output_dir: .github/cppreportcard
+          install_tools: 'false'
+          fail_on: findings
+          threshold: '100'
+          commit: 'false'
+      - name: Require complete A+ analysis with zero diagnostics
+        if: ${{ !cancelled() && steps.inputs.outcome == 'success' && steps.report.outcome != 'skipped' }}
+        run: python3 tests/cpp/check_report_complete.py .github/cppreportcard/report.json --require-aplus
+      - name: Upload report and compilation scope
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cppreportcard-ubuntu-24.04-arm
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            .github/cppreportcard/report.json
+            .github/cppreportcard/report.md
+            .github/cppreportcard/badge.svg
+            reports/cpp/*.txt
+            reports/cpp/quality/
+            reports/cpp/build-log/
+            reports/cpp/test-log/
+            reports/cpp/build/linkerbot_hand_ros_cpp/test_results/
