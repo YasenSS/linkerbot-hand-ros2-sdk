@@ -35,17 +35,15 @@ runs:
       run: |
         apt-get update
         apt-get install -y --no-install-recommends \
-          build-essential cmake ninja-build gcc-13 g++-13 clang-18 \
-          cppcheck python3-colcon-common-extensions python3-venv
+          build-essential cmake ninja-build gcc-13 g++-13 clang-18 clang-format-18 clang-tidy-18 \
+          cppcheck python3-colcon-common-extensions
         source /opt/ros/jazzy/setup.bash
         rosdep update
         rosdep install --from-paths linkerbot_hand_msgs linkerbot_hand_ros_cpp \
           --ignore-src --rosdistro jazzy -y
-        python3 -m venv /tmp/cpp-quality-tools
-        /tmp/cpp-quality-tools/bin/pip install clang-format==18.1.8 clang-tidy==18.1.8
         mkdir -p /tmp/cpp-quality-bin
-        ln -s /tmp/cpp-quality-tools/bin/clang-format /tmp/cpp-quality-bin/clang-format
-        ln -s /tmp/cpp-quality-tools/bin/clang-tidy /tmp/cpp-quality-bin/clang-tidy
+        ln -s /usr/bin/clang-format-18 /tmp/cpp-quality-bin/clang-format
+        ln -s /usr/bin/clang-tidy-18 /tmp/cpp-quality-bin/clang-tidy
         echo /tmp/cpp-quality-bin >> "$GITHUB_PATH"
         python3 -c 'import yaml; import rclpy'
     - name: Record tested source revisions
