@@ -530,7 +530,7 @@ namespace linkerbot_hand_ros_cpp {
         if (!reader->parse(text.data(), text.data() + text.size(), &value, &errors) || !value.isObject()) {
             throw hand::ValidationError("transport_json must be a strict JSON object: " + errors);
         }
-        auto string = [&](const char *key, std::string initial = {}) {
+        auto string = [&](const char *key, const std::string &initial = {}) {
             if (!value.isMember(key)) {
                 return initial;
             }
