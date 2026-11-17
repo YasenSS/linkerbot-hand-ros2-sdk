@@ -4,9 +4,24 @@ import copy
 import unittest
 
 from check_report_complete import validate
+from cppcheck_report import command_database
 
 
 class ReportAcceptanceTests(unittest.TestCase):
+    def test_cppcheck_preserves_escaped_cmake_definitions_without_mutation(self):
+        entry = {
+            "directory": "/build",
+            "file": "/source/driver.cpp",
+            "command": 'c++ -DNAME=\\"driver\\" -c /source/driver.cpp',
+            "arguments": ["c++", '-DNAME="driver"', "-c", "/source/driver.cpp"],
+        }
+        prepared = command_database([entry])
+        self.assertEqual(prepared[0]["command"], entry["command"])
+        self.assertNotIn("arguments", prepared[0])
+        self.assertIn("arguments", entry)
+        with self.assertRaises(ValueError):
+            command_database([{"file": "/source/driver.cpp", "arguments": []}])
+
     def setUp(self):
         self.report = {
             "mode": "full",
