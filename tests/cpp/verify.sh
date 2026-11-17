@@ -32,6 +32,7 @@ colcon --log-base "$results_dir/build-log" build \
   --cmake-args "-DLINKERBOT_HAND_SOURCE_DIR=$hand_source" \
     "-DLINKERBOT_COMM_SOURCE_DIR=$transport_source" \
     -DPython3_EXECUTABLE=/usr/bin/python3 -DCMAKE_BUILD_TYPE=Debug \
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DLINKERBOT_ROS_CPP_WARNINGS_AS_ERRORS=ON \
     "-DLINKERBOT_ROS_CPP_SANITIZERS=$sanitizers"
 # shellcheck source=/dev/null
