@@ -56,6 +56,8 @@ CheckOptions:
   readability-identifier-naming.TypeAliasCase: CamelCase
   readability-identifier-naming.TypedefCase: CamelCase
   readability-identifier-naming.TemplateParameterCase: CamelCase
+  # Analyze handwritten branches, not ROS logging/GoogleTest macro internals.
+  readability-function-cognitive-complexity.IgnoreMacros: true
   readability-function-cognitive-complexity.Threshold: 25
   readability-function-size.LineThreshold: 80
   misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic: true
