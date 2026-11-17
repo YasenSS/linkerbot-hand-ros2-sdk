@@ -539,11 +539,11 @@ namespace linkerbot_hand_ros_cpp {
             }
             return value[key].asString();
         };
-        auto integer = [&](const char *key, uint32_t initial, uint32_t maximum = UINT32_MAX) {
+        auto integer = [&](const char *key, uint32_t initial, std::optional<uint32_t> maximum = std::nullopt) {
             if (!value.isMember(key)) {
                 return initial;
             }
-            if (!value[key].isUInt() || value[key].asUInt() > maximum) {
+            if (!value[key].isUInt() || (maximum && value[key].asUInt() > maximum.value())) {
                 throw hand::ValidationError(std::string(key) + " is out of range");
             }
             return value[key].asUInt();
