@@ -1,5 +1,11 @@
 # 本地开发检查
 
+C++ SDK 驱动的独立验证入口：在加载目标 ROS 发行版的终端运行
+`bash tests/cpp/verify.sh /path/to/linkerbot-hand-cpp /path/to/linkerbot-transport-cpp`。
+它构建 `linkerbot_hand_msgs` 与 `linkerbot_hand_ros_cpp`，并使用内存 CAN 端点运行
+真实 SDK 的无硬件测试。详见 [C++ 驱动说明](linkerbot_hand_ros_cpp/README.md)。
+下方 Python / GUI 检查及 Docker 入口仍验证原来的三个 Python 路径相关包。
+
 先按[安装](linkerbot_hand_ros/docs/zh/quick_start.md)或[更新](linkerbot_hand_ros/docs/zh/update.md)
 准备 Transport、Hand Python 和 ROS 的最新 `main`，构建消息包及所有消费者。
 依赖源码更新后重新构建，不从另一 Python 环境借用已生成的 ROSIDL 类型。

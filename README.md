@@ -2,14 +2,20 @@
 
 English | [简体中文](README_zh.md)
 
-This repository contains three independently discoverable ROS 2 packages:
+This repository contains four independently discoverable ROS 2 packages:
 
 - [`linkerbot_hand_msgs`](./linkerbot_hand_msgs): typed messages and services.
 - [`linkerbot_hand_ros`](./linkerbot_hand_ros): the Lifecycle driver and tools.
+- [`linkerbot_hand_ros_cpp`](./linkerbot_hand_ros_cpp): a C++ SDK Lifecycle
+  driver sharing the existing message/service contracts. See its README for
+  build instructions, startup and offline validation.
 - [`linkerbot_hand_gui`](./linkerbot_hand_gui): O6 URDF slider preview and safe
   ROS 2 control bridge.
 
 ## Quick Start
+
+The following uses the Python driver. For the C++ SDK, follow the
+[C++ driver guide](linkerbot_hand_ros_cpp/README.md). Run one device driver per hand.
 
 Use ROS 2 Humble on Ubuntu 22.04 or Jazzy on Ubuntu 24.04, with the latest `main`
 of Transport, Hand Python and this repository. Use the matching system Python
