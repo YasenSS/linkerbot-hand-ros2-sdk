@@ -47,5 +47,18 @@ ament_python_install_package(${PROJECT_NAME})
 install(PROGRAMS scripts/angle_command scripts/angle_controller scripts/state_monitor
   scripts/frequency_benchmark DESTINATION lib/${PROJECT_NAME})
 
-
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_gtest(test_driver test/test_driver.cpp)
+  target_link_libraries(test_driver hand_driver)
+  set_tests_properties(test_driver PROPERTIES
+    ENVIRONMENT "ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=/tmp/linkerbot-cpp-test-logs"
+    TIMEOUT 90)
+  ament_add_pytest_test(test_launch test/test_launch.py
+    TIMEOUT 60 ENV "ROS_LOCALHOST_ONLY=1" "ROS_LOG_DIR=/tmp/linkerbot-cpp-launch-test-logs")
+  ament_add_pytest_test(test_configuration test/test_configuration.py TIMEOUT 30)
+  ament_add_pytest_test(test_contract test/test_contract.py
+    TIMEOUT 90 ENV "ROS_LOCALHOST_ONLY=1" "ROS_LOG_DIR=/tmp/linkerbot-cpp-contract-test-logs")
+endif()
 ament_package()
