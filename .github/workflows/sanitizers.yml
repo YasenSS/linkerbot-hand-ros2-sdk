@@ -1,0 +1,90 @@
+name: Sanitizers
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HAND_REPOSITORY: ${{ vars.LINKERBOT_HAND_CPP_REPOSITORY || format('{0}/linkerbot-hand-cpp-sdk', github.repository_owner) }}
+  HAND_REF: ${{ vars.LINKERBOT_HAND_CPP_REF || 'd88813f302553f056bfdd71b40b037738bd6975a' }}
+  COMM_REPOSITORY: ${{ vars.LINKERBOT_COMM_REPOSITORY || format('{0}/linkerbot-transport-cpp', github.repository_owner) }}
+  COMM_REF: ${{ vars.LINKERBOT_COMM_REF || '0e190032d65ed0b315337b45b3779cf4f650ed68' }}
+
+jobs:
+  validation:
+    name: Validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Check C++ validation helpers and workflows
+        run: |
+          python -m pip install -r requirements/ci-lint.txt
+          ruff check tests/cpp
+          ruff format --check tests/cpp
+          python -m unittest discover -s tests/cpp -p 'test_quality_tools.py'
+          shellcheck --severity=warning tests/cpp/*.sh
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          actionlint
+  sanitizers:
+    name: ASan and UBSan
+    runs-on: ubuntu-24.04
+    container: ros:jazzy-ros-base
+    timeout-minutes: 45
+    env:
+      CC: gcc-13
+      CXX: g++-13
+      LINKERBOT_ROS_CPP_SANITIZERS: 'ON'
+      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:strict_string_checks=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-cpp
+        with:
+          hand-repository: ${{ env.HAND_REPOSITORY }}
+          hand-ref: ${{ env.HAND_REF }}
+          transport-repository: ${{ env.COMM_REPOSITORY }}
+          transport-ref: ${{ env.COMM_REF }}
+      - name: Set offline configuration directory
+        run: echo "XDG_CONFIG_HOME=${RUNNER_TEMP}/xdg-config" >> "$GITHUB_ENV"
+      - name: Build and run instrumented ROS C++ tests
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          bash tests/cpp/verify.sh external/linkerbot-hand-cpp-sdk \
+            external/linkerbot-transport-cpp "$PWD/reports/cpp"
+      - name: Upload sanitizer evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sanitizers-ubuntu-24.04
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            reports/cpp/*.txt
+            reports/cpp/build-log/
+            reports/cpp/test-log/
+            reports/cpp/ros-logs/
+            reports/cpp/build/linkerbot_hand_ros_cpp/test_results/
