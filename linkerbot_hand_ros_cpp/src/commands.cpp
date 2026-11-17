@@ -126,7 +126,7 @@ namespace linkerbot_hand_ros_cpp {
             return "torque_limit";
         case hand::CommandFamily::kTorqueTarget:
             return "torque_target";
-        case hand::CommandFamily::kMotionTimeSetting:
+        case hand::CommandFamily::kMotionTime:
             return "motion_time_setting";
         case hand::CommandFamily::kStallConfiguration:
             return "stall_configuration";

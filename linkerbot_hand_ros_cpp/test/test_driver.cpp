@@ -313,6 +313,7 @@ TEST(Conversions, UnknownPhysicalValuesRemainInvalid) {
     EXPECT_FALSE(result.meta.valid);
 }
 TEST(Conversions, CommandStagesAreMappedExplicitly) {
+    EXPECT_EQ(driver::family_name(hand::CommandFamily::kMotionTime), "motion_time_setting");
     EXPECT_EQ(driver::command_stage(hand::CommandStage::kAccepted), msg::HandCommandStatus::STAGE_ACCEPTED);
     EXPECT_EQ(driver::command_stage(hand::CommandStage::kDispatched), msg::HandCommandStatus::STAGE_DISPATCHED);
     EXPECT_EQ(driver::command_stage(hand::CommandStage::kCancelled), msg::HandCommandStatus::STAGE_FAILED);
