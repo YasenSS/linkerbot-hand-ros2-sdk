@@ -1,7 +1,16 @@
+#include "linkerbot/hand/capabilities.hpp"
+#include "linkerbot/hand/discovery.hpp"
+#include "linkerbot/hand/errors.hpp"
 #include "linkerbot_hand_ros_cpp/driver_config.hpp"
-#include <jsoncpp/json/json.h>
+#include <chrono>
+#include <filesystem>
+#include <json/config.h>
+#include <json/reader.h>
+#include <json/value.h>
+#include <json/writer.h>
 #include <regex>
 #include <sstream>
+#include <string>
 
 namespace linkerbot_hand_ros_cpp {
     std::string normalize_namespace(const std::string &value, const std::string &parent) {
@@ -10,7 +19,8 @@ namespace linkerbot_hand_ros_cpp {
         }
         const auto full = value.front() == '/' ? value : parent + "/" + value;
         std::istringstream stream(full);
-        std::string part, result;
+        std::string part;
+        std::string result;
         while (std::getline(stream, part, '/')) {
             if (part.empty()) {
                 continue;
