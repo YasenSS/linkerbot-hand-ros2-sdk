@@ -408,6 +408,19 @@ namespace linkerbot_hand_ros_cpp {
             batch.statuses.push_back(std::move(status));
             status_pub->publish(batch);
         }
+        bool operation_supported(const char *name, const std::optional<hand::DeviceCapabilities> &caps) const {
+            const auto wire = caps ? std::optional<msg::HandCapabilities>(capabilities(*caps, {})) : std::nullopt;
+            return std::string(name) == "recover"
+                       ? bool(device)
+                       : wire &&
+                             ((std::string(name) == "get_device_info" && wire->operations.read_device_info) ||
+                              (std::string(name) == "get_stall_protection" && wire->operations.read_stall_protection) ||
+                              (std::string(name) == "clear_faults" && wire->operations.clear_faults) ||
+                              (std::string(name) == "enable" && wire->operations.enable) ||
+                              (std::string(name) == "disable" && wire->operations.disable) ||
+                              (std::string(name) == "calibrate" && wire->operations.calibrate) ||
+                              (std::string(name) == "save_parameters" && wire->operations.save_parameters));
+        }
         void support_status() {
             diagnostic_msgs::msg::DiagnosticArray array;
             array.header.stamp = node.now();
@@ -435,18 +448,7 @@ namespace linkerbot_hand_ros_cpp {
             }
             for (const auto *name : {"get_device_info", "recover", "get_stall_protection", "clear_faults", "enable",
                                      "disable", "calibrate", "save_parameters"}) {
-                const auto wire = caps ? std::optional<msg::HandCapabilities>(capabilities(*caps, {})) : std::nullopt;
-                const bool supported =
-                    std::string(name) == "recover"
-                        ? bool(device)
-                        : wire && ((std::string(name) == "get_device_info" && wire->operations.read_device_info) ||
-                                   (std::string(name) == "get_stall_protection" &&
-                                    wire->operations.read_stall_protection) ||
-                                   (std::string(name) == "clear_faults" && wire->operations.clear_faults) ||
-                                   (std::string(name) == "enable" && wire->operations.enable) ||
-                                   (std::string(name) == "disable" && wire->operations.disable) ||
-                                   (std::string(name) == "calibrate" && wire->operations.calibrate) ||
-                                   (std::string(name) == "save_parameters" && wire->operations.save_parameters));
+                const bool supported = operation_supported(name, caps);
                 entry(name, supported, "current SDK/model does not support this operation");
             }
             {
@@ -477,10 +479,7 @@ namespace linkerbot_hand_ros_cpp {
             }
             support_pub->publish(array);
         }
-        void create_interfaces() {
-            if (interfaces_created) {
-                return;
-            }
+        void create_command_interfaces() {
             subscriptions.push_back(node.create_subscription<msg::HandJointCommand>(
                 "~/command/angles", command_qos(), [this](msg::HandJointCommand::ConstSharedPtr command) {
                     try {
@@ -535,6 +534,8 @@ namespace linkerbot_hand_ros_cpp {
                     });
                 }
             }
+        }
+        void create_raw_interfaces() {
             angles_pub = publisher<msg::HandJointState>("~/state/angles", state_qos());
             for (auto semantic : kStateInterfaces) {
                 if (semantic != hand::TelemetrySemantic::kForce) {
@@ -557,6 +558,8 @@ namespace linkerbot_hand_ros_cpp {
                         response.message = "read completed; inspect sample origin and freshness";
                     });
             }
+        }
+        void create_sensor_interfaces() {
             force_pub = publisher<msg::HandTelemetry>("~/state/force", state_qos());
             tactile_pub = publisher<msg::HandTactileState>("~/state/tactile", state_qos());
             sensors_pub = publisher<msg::HandTactileSensorState>("~/state/tactile_sensors", state_qos());
@@ -595,14 +598,28 @@ namespace linkerbot_hand_ros_cpp {
                 response.info = device_info(identity, node.now(), device->get_health().connection_generation);
                 response.success = true;
             });
+        }
+        static std::string operation_name(hand::DeviceOperation operation) {
+            switch (operation) {
+            case hand::DeviceOperation::kClearFaults:
+                return "clear_faults";
+            case hand::DeviceOperation::kEnable:
+                return "enable";
+            case hand::DeviceOperation::kDisable:
+                return "disable";
+            case hand::DeviceOperation::kCalibrate:
+                return "calibrate";
+            case hand::DeviceOperation::kSaveParameters:
+                return "save_parameters";
+            default:
+                throw hand::UnsupportedOperationError("operation has no ROS service");
+            }
+        }
+        void create_operation_interfaces() {
             for (auto operation :
                  {hand::DeviceOperation::kClearFaults, hand::DeviceOperation::kEnable, hand::DeviceOperation::kDisable,
                   hand::DeviceOperation::kCalibrate, hand::DeviceOperation::kSaveParameters}) {
-                const std::string name = operation == hand::DeviceOperation::kClearFaults ? "clear_faults"
-                                         : operation == hand::DeviceOperation::kEnable    ? "enable"
-                                         : operation == hand::DeviceOperation::kDisable   ? "disable"
-                                         : operation == hand::DeviceOperation::kCalibrate ? "calibrate"
-                                                                                          : "save_parameters";
+                const auto name = operation_name(operation);
                 service<srv::SubmitCommand>("~/" + name, [this, operation](const auto &, auto &response) {
                     response.command_id = track([&] { return submit_operation(*device, operation); });
                     response.accepted = true;
@@ -638,6 +655,15 @@ namespace linkerbot_hand_ros_cpp {
                     }
                 },
                 service_qos(), management_group));
+        }
+        void create_interfaces() {
+            if (interfaces_created) {
+                return;
+            }
+            create_command_interfaces();
+            create_raw_interfaces();
+            create_sensor_interfaces();
+            create_operation_interfaces();
             interfaces_created = true;
             support_status();
         }
