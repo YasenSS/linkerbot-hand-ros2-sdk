@@ -39,13 +39,19 @@ colcon --log-base "$results_dir/build-log" build \
     "-DLINKERBOT_ROS_CPP_TSAN=$tsan"
 # shellcheck source=/dev/null
 source "$results_dir/install/setup.bash"
+# Keep reports from expected-failure subprocesses: their exit codes alone
+# cannot distinguish a validation error from a sanitizer failure.
+if [[ "$sanitizers" == ON || "$tsan" == ON ]]; then
+  mkdir -p "$results_dir/sanitizer-reports"
+  sanitizer_reports=$(mktemp -d "$results_dir/sanitizer-reports/run.XXXXXX")
+fi
 # Leak detection runs through ASan; TSan uses a separate build.
 if [[ "$sanitizers" == ON ]]; then
-  export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=1:strict_string_checks=1}
-  export UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}
+  export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=1:halt_on_error=1:strict_string_checks=1}:log_path=$sanitizer_reports/asan"
+  export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}:log_path=$sanitizer_reports/ubsan"
 fi
 if [[ "$tsan" == ON ]]; then
-  export TSAN_OPTIONS=${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}
+  export TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}:log_path=$sanitizer_reports/tsan"
 fi
 colcon --log-base "$results_dir/test-log" test \
   --base-paths "$repo_root/linkerbot_hand_msgs" "$repo_root/linkerbot_hand_ros_cpp" \
@@ -53,3 +59,12 @@ colcon --log-base "$results_dir/test-log" test \
   --build-base "$results_dir/build" --install-base "$results_dir/install" \
   --return-code-on-test-failure
 colcon test-result --test-result-base "$results_dir/build/linkerbot_hand_ros_cpp" --verbose
+
+if [[ "$sanitizers" == ON || "$tsan" == ON ]]; then
+  reports=("$sanitizer_reports"/*)
+  if [[ -e "${reports[0]}" ]]; then
+    cat "${reports[@]}"
+    echo "Sanitizer diagnostics found, including expected-failure subprocesses" >&2
+    exit 1
+  fi
+fi

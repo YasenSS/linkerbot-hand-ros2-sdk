@@ -119,4 +119,5 @@ jobs:
             reports/cpp/build-log/
             reports/cpp/test-log/
             reports/cpp/ros-logs/
+            reports/cpp/sanitizer-reports/
             reports/cpp/build/linkerbot_hand_ros_cpp/test_results/
