@@ -713,6 +713,10 @@ int main(int argc, char **argv) {
                      error.what());
         status = 1;
     }
+    // A signal may invalidate the context before its shutdown callbacks finish.
+    if (!rclcpp::ok()) {
+        rclcpp::shutdown();
+    }
     for (auto it = nodes.rbegin(); it != nodes.rend(); ++it) {
         try {
             if ((*it)->get_current_state().id() == lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
