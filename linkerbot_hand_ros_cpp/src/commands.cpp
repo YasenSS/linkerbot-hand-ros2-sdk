@@ -1,10 +1,25 @@
 #include "linkerbot_hand_ros_cpp/commands.hpp"
+#include "linkerbot/hand/api/commands.hpp"
+#include "linkerbot/hand/api/device.hpp"
+#include "linkerbot/hand/api/readings.hpp"
+#include "linkerbot/hand/capabilities.hpp"
+#include "linkerbot/hand/errors.hpp"
+#include "linkerbot_hand_msgs/msg/hand_command_status.hpp"
+#include "linkerbot_hand_msgs/msg/hand_command_transition.hpp"
+#include "linkerbot_hand_msgs/msg/hand_joint_command.hpp"
+#include "linkerbot_hand_ros_cpp/conversions.hpp"
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <exception>
 #include <limits>
+#include <rclcpp/time.hpp>
+#include <stdexcept>
+#include <vector>
 
 namespace linkerbot_hand_ros_cpp {
     hand::CommandHandle submit_angles(hand::HandDevice &device, const msg::HandJointCommand &command) {
-        if (!command.client_id) {
+        if (command.client_id == 0u) {
             throw hand::ValidationError("client_id must be nonzero");
         }
         if (command.representation == msg::HandJointCommand::REPRESENTATION_PERCENT) {
