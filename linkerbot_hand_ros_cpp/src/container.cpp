@@ -56,25 +56,12 @@ namespace {
         }
         return value;
     }
-    Json::Value yaml_json(const YAML::Node &node) {
-        if (node.IsMap()) {
-            Json::Value result(Json::objectValue);
-            for (const auto &pair : node) {
-                const auto key = pair.first.as<std::string>();
-                if (result.isMember(key)) {
-                    throw hand::ValidationError("duplicate YAML key: " + key);
-                }
-                result[key] = yaml_json(pair.second);
-            }
-            return result;
-        }
-        if (node.IsSequence()) {
-            Json::Value result(Json::arrayValue);
-            for (const auto &item : node) {
-                result.append(yaml_json(item));
-            }
-            return result;
-        }
+    struct YamlWork {
+        YAML::Node source;
+        Json::Value *target;
+        size_t depth;
+    };
+    Json::Value yaml_scalar(const YAML::Node &node) {
         if (node.IsNull()) {
             return {};
         }
@@ -87,6 +74,46 @@ namespace {
             }
         }
         return node.Scalar();
+    }
+    void expand_yaml_map(const YamlWork &item, std::vector<YamlWork> &pending) {
+        *item.target = Json::Value(Json::objectValue);
+        for (const auto &pair : item.source) {
+            const auto key = pair.first.as<std::string>();
+            if (item.target->isMember(key)) {
+                throw hand::ValidationError("duplicate YAML key: " + key);
+            }
+            pending.push_back({pair.second, &(*item.target)[key], item.depth + 1});
+        }
+    }
+    void expand_yaml_sequence(const YamlWork &item, std::vector<YamlWork> &pending) {
+        *item.target = Json::Value(Json::arrayValue);
+        if (item.source.size() > std::numeric_limits<Json::ArrayIndex>::max()) {
+            throw hand::ValidationError("YAML sequence is too large");
+        }
+        const auto count = static_cast<Json::ArrayIndex>(item.source.size());
+        item.target->resize(count);
+        for (Json::ArrayIndex i = 0; i < count; ++i) {
+            pending.push_back({item.source[i], &(*item.target)[i], item.depth + 1});
+        }
+    }
+    Json::Value yaml_json(const YAML::Node &node) {
+        Json::Value result;
+        std::vector<YamlWork> pending{{node, &result, 0}};
+        while (!pending.empty()) {
+            const auto item = pending.back();
+            pending.pop_back();
+            if (item.depth > 64) {
+                throw hand::ValidationError("YAML nesting exceeds 64 levels or contains a cyclic alias");
+            }
+            if (item.source.IsMap()) {
+                expand_yaml_map(item, pending);
+            } else if (item.source.IsSequence()) {
+                expand_yaml_sequence(item, pending);
+            } else {
+                *item.target = yaml_scalar(item.source);
+            }
+        }
+        return result;
     }
     std::vector<rclcpp::Parameter> parameters(const Json::Value &values) {
         if (!values.isObject()) {
@@ -153,20 +180,23 @@ namespace {
         if (!expected.isObject()) {
             throw hand::ValidationError("match must be an object");
         }
-        for (const auto &key : expected.getMemberNames()) {
-            if (!actual.isMember(key)) {
-                throw hand::UnsupportedOperationError("match." + key + ": no C++ SDK identity field");
-            }
-            if (expected[key].isObject()) {
-                if (!matches(expected[key], actual[key])) {
+        std::vector<std::pair<const Json::Value *, const Json::Value *>> pending{{&expected, &actual}};
+        while (!pending.empty()) {
+            const auto [left, right] = pending.back();
+            pending.pop_back();
+            for (const auto &key : left->getMemberNames()) {
+                if (!right->isMember(key)) {
+                    throw hand::UnsupportedOperationError("match." + key + ": no C++ SDK identity field");
+                }
+                if ((*left)[key].isObject()) {
+                    pending.emplace_back(&(*left)[key], &(*right)[key]);
+                } else if (key == "model") {
+                    if (lower((*left)[key].asString()) != lower((*right)[key].asString())) {
+                        return false;
+                    }
+                } else if ((*left)[key] != (*right)[key]) {
                     return false;
                 }
-            } else if (key == "model") {
-                if (lower(expected[key].asString()) != lower(actual[key].asString())) {
-                    return false;
-                }
-            } else if (expected[key] != actual[key]) {
-                return false;
             }
         }
         return true;

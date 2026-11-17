@@ -225,3 +225,17 @@ def test_installed_container_file_alias_rejects_duplicate_yaml_before_discovery(
         ["-p", "discovery_mode:=file", "-p", f"deployment_config:={path}"]
     )
     assert "duplicate YAML key" in output
+
+
+@pytest.mark.parametrize(
+    "content", ["&root {child: *root}", "root: " + "[" * 66 + "0" + "]" * 66]
+)
+def test_installed_container_rejects_cyclic_or_deep_yaml_before_discovery(
+    tmp_path, content
+):
+    path = tmp_path / "hands.yaml"
+    path.write_text(content)
+    output = _container(
+        ["-p", "discovery_mode:=file", "-p", f"deployment_config:={path}"]
+    )
+    assert "YAML nesting exceeds 64 levels" in output
