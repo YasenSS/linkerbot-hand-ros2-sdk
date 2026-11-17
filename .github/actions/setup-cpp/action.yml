@@ -43,7 +43,11 @@ runs:
           --ignore-src --rosdistro jazzy -y
         python3 -m venv /tmp/cpp-quality-tools
         /tmp/cpp-quality-tools/bin/pip install clang-format==18.1.8 clang-tidy==18.1.8
-        echo /tmp/cpp-quality-tools/bin >> "$GITHUB_PATH"
+        mkdir -p /tmp/cpp-quality-bin
+        ln -s /tmp/cpp-quality-tools/bin/clang-format /tmp/cpp-quality-bin/clang-format
+        ln -s /tmp/cpp-quality-tools/bin/clang-tidy /tmp/cpp-quality-bin/clang-tidy
+        echo /tmp/cpp-quality-bin >> "$GITHUB_PATH"
+        python3 -c 'import yaml; import rclpy'
     - name: Record tested source revisions
       shell: bash
       run: |
