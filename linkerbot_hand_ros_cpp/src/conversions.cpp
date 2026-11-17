@@ -91,6 +91,8 @@ namespace linkerbot_hand_ros_cpp {
                 return "calibrate";
             case hand::DeviceOperation::kSaveParameters:
                 return "save_parameters";
+            case hand::DeviceOperation::kSaveParametersConfirmed:
+                return "save_parameters_confirmed";
             }
             throw std::logic_error("unknown operation");
         }

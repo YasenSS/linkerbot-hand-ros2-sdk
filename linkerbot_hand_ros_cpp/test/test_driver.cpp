@@ -1,6 +1,7 @@
 #include "linkerbot_hand_ros_cpp/commands.hpp"
 #include "linkerbot_hand_ros_cpp/hand_node.hpp"
 #include "linkerbot_hand_ros_cpp/qos.hpp"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -311,6 +312,12 @@ TEST(Conversions, UnknownPhysicalValuesRemainInvalid) {
     EXPECT_FALSE(result.physical_rad_valid[0]);
     EXPECT_TRUE(std::isnan(result.physical_rad[0]));
     EXPECT_FALSE(result.meta.valid);
+}
+TEST(Conversions, ConfirmedSaveCapabilityIsPreserved) {
+    const auto caps = hand::declared_capabilities(hand::Model::kL6, hand::HandSide::kLeft);
+    const auto message = driver::capabilities(caps, {});
+    const auto &operations = message.operations.acknowledged_operations;
+    EXPECT_NE(std::find(operations.begin(), operations.end(), "save_parameters_confirmed"), operations.end());
 }
 TEST(Conversions, CommandStagesAreMappedExplicitly) {
     EXPECT_EQ(driver::family_name(hand::CommandFamily::kMotionTime), "motion_time_setting");
