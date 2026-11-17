@@ -9,6 +9,10 @@ namespace linkerbot_hand_ros_cpp {
         using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
         explicit HandNode(const rclcpp::NodeOptions &options = rclcpp::NodeOptions(), DeviceFactory factory = {});
         ~HandNode() override;
+        HandNode(const HandNode &) = delete;
+        HandNode &operator=(const HandNode &) = delete;
+        HandNode(HandNode &&) = delete;
+        HandNode &operator=(HandNode &&) = delete;
         CallbackReturn on_configure(const rclcpp_lifecycle::State &) override;
         CallbackReturn on_activate(const rclcpp_lifecycle::State &) override;
         CallbackReturn on_deactivate(const rclcpp_lifecycle::State &) override;
