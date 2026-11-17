@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>linkerbot_hand_ros_cpp</name>
+  <version>2.0.0</version>
+  <description>ROS 2 lifecycle driver using the Linkerbot C++ hand SDK.</description>
+  <maintainer email="1849346915@qq.com">zhuzhixiang</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>lifecycle_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>builtin_interfaces</depend>
+  <depend>jsoncpp</depend>
+  <depend>yaml-cpp</depend>
+  <depend version_gte="2.0.0" version_lt="3.0.0">linkerbot_hand_msgs</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>rclpy</test_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

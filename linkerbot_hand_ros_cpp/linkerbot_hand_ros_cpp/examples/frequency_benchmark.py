@@ -1,0 +1,774 @@
+"""Measure equal-workload ROS angle and optional complete tactile rates."""
+
+from __future__ import annotations
+
+import argparse
+import math
+import sys
+import time
+from collections.abc import Callable, Sequence
+from itertools import pairwise
+
+import rclpy
+from builtin_interfaces.msg import Time
+from diagnostic_msgs.msg import DiagnosticArray
+from rcl_interfaces.srv import SetParametersAtomically
+from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rclpy.task import Future
+from rclpy.utilities import remove_ros_args
+
+from linkerbot_hand_msgs.msg import (
+    HandCommandStatus,
+    HandCommandStatusBatch,
+    HandJointState,
+    HandNormalForceResultant,
+    HandTactileSensorState,
+    HandTactileState,
+    HandTelemetry,
+)
+from linkerbot_hand_ros_cpp.benchmark import (
+    BenchmarkMeasurements,
+    BenchmarkResult,
+    CommandEvent,
+    DiagnosticObservation,
+    LatencyStats,
+    StateEvent,
+    evaluate_measurements,
+)
+from linkerbot_hand_ros_cpp.client import HandCommandClient
+from linkerbot_hand_ros_cpp.examples._command_cli import (
+    DEFAULT_DRIVER_NAME,
+    resolve_driver_name,
+    spin_until_ready,
+)
+from linkerbot_hand_ros_cpp.qos import STATE_QOS, STATUS_QOS
+
+DEFAULT_ANGLE_RATES = (50.0, 100.0, 150.0, 200.0)
+
+
+def _parse_args(args: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="测量 ROS 百分比角度收发及可选完整触觉事务的稳定频率"
+    )
+    parser.add_argument("--driver-name", default=DEFAULT_DRIVER_NAME)
+    parser.add_argument(
+        "--angle-rates",
+        type=float,
+        nargs="+",
+        default=list(DEFAULT_ANGLE_RATES),
+        help="按升序测试的角度命令及角度轮询候选频率",
+    )
+    parser.add_argument(
+        "--tactile-hz",
+        type=float,
+        default=0.0,
+        help="完整触觉轮询频率；0 表示仅测试角度",
+    )
+    parser.add_argument(
+        "--angle-feedback",
+        choices=("query_only", "command_feedback_only", "adaptive"),
+        default="query_only",
+        help="角度反馈策略；主动收发基准默认使用 query_only",
+    )
+    parser.add_argument("--duration", type=float, default=180.0)
+    parser.add_argument("--warmup", type=float, default=2.0)
+    parser.add_argument("--drain-time", type=float, default=1.0)
+    parser.add_argument(
+        "--diagnostic-hz",
+        type=float,
+        default=1.0,
+        help="驱动 health diagnostics 频率；上限测试建议保持 1 Hz",
+    )
+    parser.add_argument("--startup-timeout", type=float, default=10.0)
+    parser.add_argument("--minimum-ratio", type=float, default=0.9)
+    parser.add_argument("--repetitions", type=int, default=3)
+    parser.add_argument(
+        "--continue-after-failure",
+        action="store_true",
+        help="某一候选频率失败后仍继续测试更高频率",
+    )
+    parser.add_argument(
+        "--no-configure-driver",
+        action="store_true",
+        help="不自动同步 SDK polling、ROS 发布和诊断频率",
+    )
+    parser.add_argument(
+        "--angle-values",
+        type=float,
+        nargs="+",
+        help="百分比角度基准；省略时保持首次收到的有效 percent 状态",
+    )
+    parser.add_argument(
+        "--angle-amplitude",
+        type=float,
+        default=0.0,
+        help="单关节百分比正弦扰动幅度；0 表示保持当前姿态",
+    )
+    parser.add_argument("--angle-period", type=float, default=2.0)
+    parser.add_argument("--joint-index", type=int, default=0)
+    return parser.parse_args(args)
+
+
+def _validate_args(parsed: argparse.Namespace) -> None:
+    rates = parsed.angle_rates
+    if not rates or any(not math.isfinite(rate) or rate <= 0.0 for rate in rates):
+        raise ValueError("--angle-rates 必须是有限正数")
+    if any(later <= earlier for earlier, later in pairwise(rates)):
+        raise ValueError("--angle-rates 必须严格递增且不能重复")
+    for name in ("duration", "drain_time", "startup_timeout", "diagnostic_hz"):
+        value = getattr(parsed, name)
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"--{name.replace('_', '-')} 必须是有限正数")
+    if not math.isfinite(parsed.warmup) or parsed.warmup < 0.0:
+        raise ValueError("--warmup 必须是有限非负数")
+    if not 0.0 < parsed.minimum_ratio <= 1.0:
+        raise ValueError("--minimum-ratio 必须在 (0, 1] 内")
+    if not math.isfinite(parsed.tactile_hz) or parsed.tactile_hz < 0.0:
+        raise ValueError("--tactile-hz 必须是有限非负数")
+    if type(parsed.repetitions) is not int or parsed.repetitions <= 0:
+        raise ValueError("--repetitions 必须大于 0")
+    if type(parsed.joint_index) is not int or parsed.joint_index < 0:
+        raise ValueError("--joint-index 不能为负数")
+    if not math.isfinite(parsed.angle_amplitude) or parsed.angle_amplitude < 0.0:
+        raise ValueError("--angle-amplitude 必须是有限非负数")
+    if not math.isfinite(parsed.angle_period) or parsed.angle_period <= 0.0:
+        raise ValueError("--angle-period 必须是有限正数")
+
+
+class FrequencyBenchmarkNode(Node):
+    """Own persistent typed clients and observations for the benchmark."""
+
+    def __init__(self, driver_name: str) -> None:
+        super().__init__("linkerbot_hand_frequency_benchmark")
+        self.driver_name = driver_name.rstrip("/")
+        self.command_client = HandCommandClient(self, self.driver_name)
+        self.parameter_client = self.create_client(
+            SetParametersAtomically, f"{self.driver_name}/set_parameters_atomically"
+        )
+        self.latest_percent_angles: tuple[float, ...] | None = None
+        self.state_events: list[StateEvent] = []
+        self.command_events: list[CommandEvent] = []
+        self.diagnostic_observations: list[DiagnosticObservation] = []
+        self._observation_subscriptions = []
+        self._force_channels: tuple[str, ...] = ()
+
+    def start_observing(self) -> None:
+        """Subscribe to high-rate data after capability discovery completes."""
+
+        if self._observation_subscriptions:
+            return
+        subscriptions = []
+        try:
+            specifications = [
+                (
+                    HandJointState,
+                    f"{self.driver_name}/state/angles",
+                    self._on_angles,
+                    STATE_QOS,
+                ),
+                (
+                    HandCommandStatusBatch,
+                    f"{self.driver_name}/command/status",
+                    self._on_command_status_batch,
+                    STATUS_QOS,
+                ),
+                (
+                    DiagnosticArray,
+                    "/diagnostics",
+                    self._on_diagnostics,
+                    STATE_QOS,
+                ),
+            ]
+            force = self.command_client.telemetry_capability("force")
+            if force is not None:
+                self._force_channels = tuple(force.channel_names)
+                if force.payload_projection == "tactile_matrix":
+                    specifications.append(
+                        (
+                            HandTactileState,
+                            f"{self.driver_name}/state/tactile",
+                            self._on_tactile,
+                            STATE_QOS,
+                        )
+                    )
+                elif force.payload_projection == "tactile_descriptor":
+                    specifications.extend(
+                        (
+                            (
+                                HandTactileSensorState,
+                                f"{self.driver_name}/state/tactile_sensors",
+                                self._on_tactile_sensors,
+                                STATE_QOS,
+                            ),
+                            (
+                                HandNormalForceResultant,
+                                f"{self.driver_name}/state/normal_force_resultant",
+                                self._on_force_resultant,
+                                STATE_QOS,
+                            ),
+                        )
+                    )
+                elif force.payload_projection == "raw_vector":
+                    specifications.append(
+                        (
+                            HandTelemetry,
+                            f"{self.driver_name}/state/force",
+                            self._on_scalar_force,
+                            STATE_QOS,
+                        )
+                    )
+                else:
+                    raise RuntimeError(
+                        f"未知触觉投影: {force.payload_projection!r}; 请同步重建消息包和驱动"
+                    )
+            for message_type, topic, callback, qos in specifications:
+                subscriptions.append(
+                    self.create_subscription(message_type, topic, callback, qos)
+                )
+        except Exception:
+            for subscription in subscriptions:
+                self.destroy_subscription(subscription)
+            raise
+        self._observation_subscriptions = subscriptions
+
+    @property
+    def latest_diagnostic(self) -> DiagnosticObservation | None:
+        if not self.diagnostic_observations:
+            return None
+        return self.diagnostic_observations[-1]
+
+    def _on_angles(self, message: HandJointState) -> None:
+        observed_at = time.monotonic()
+        joint_count = len(message.joint_names)
+        structurally_valid = (
+            joint_count > 0
+            and len(message.raw) == joint_count
+            and len(message.percent) == joint_count
+            and len(message.percent_valid) == joint_count
+            and len(message.physical_rad) == joint_count
+            and len(message.physical_rad_valid) == joint_count
+        )
+        if (
+            structurally_valid
+            and message.meta.valid
+            and not message.meta.stale
+            and all(message.percent_valid)
+            and all(math.isfinite(value) for value in message.percent)
+        ):
+            self.latest_percent_angles = tuple(message.percent)
+        self.state_events.append(
+            StateEvent(
+                channel="angles",
+                observed_at=observed_at,
+                sequence=message.meta.sequence,
+                generation=message.meta.connection_generation,
+                valid=message.meta.valid and structurally_valid,
+                stale=message.meta.stale,
+            )
+        )
+
+    def _on_tactile(self, message: HandTactileState) -> None:
+        structurally_valid = (
+            tuple(matrix.finger_name for matrix in message.fingers)
+            == self._force_channels
+            and bool(message.fingers)
+            and all(
+                matrix.rows > 0
+                and matrix.columns > 0
+                and len(matrix.raw) == matrix.rows * matrix.columns
+                for matrix in message.fingers
+            )
+        )
+        self._record_force_event("tactile", message.meta, structurally_valid)
+
+    def _on_tactile_sensors(self, message: HandTactileSensorState) -> None:
+        sensors = message.sensors
+        valid = (
+            bool(sensors)
+            and tuple(sensor.finger_name for sensor in sensors) == self._force_channels
+            and tuple(sensor.selected_sensor for sensor in sensors)
+            == tuple(range(1, len(sensors) + 1))
+            and any(sensor.available for sensor in sensors)
+            and all(_complete_sensor(sensor) for sensor in sensors)
+        )
+        # A complete five-identity message counts once, not once per field,
+        # finger, CAN fragment, or derived resultant publication.
+        self._record_force_event("tactile", message.meta, valid)
+
+    def _on_force_resultant(self, message: HandNormalForceResultant) -> None:
+        valid = (
+            bool(message.finger_names)
+            and tuple(message.finger_names) == self._force_channels
+            and len(message.normal_force_resultant) == len(self._force_channels)
+            and len(message.units) == len(self._force_channels)
+            and all(math.isfinite(value) for value in message.normal_force_resultant)
+        )
+        self._record_force_event("normal_force_resultant", message.meta, valid)
+
+    def _on_scalar_force(self, message: HandTelemetry) -> None:
+        valid = (
+            bool(message.channel_names)
+            and tuple(message.channel_names) == self._force_channels
+            and len(message.raw) == len(self._force_channels)
+            and all(math.isfinite(value) for value in message.raw)
+        )
+        self._record_force_event("tactile", message.meta, valid)
+
+    def _record_force_event(self, channel, meta, structurally_valid):
+        self.state_events.append(
+            StateEvent(
+                channel=channel,
+                observed_at=time.monotonic(),
+                sequence=meta.sequence,
+                generation=meta.connection_generation,
+                valid=meta.valid and structurally_valid,
+                stale=meta.stale,
+            )
+        )
+
+    def _on_command_status(self, message: HandCommandStatus) -> None:
+        if (
+            message.client_id != self.command_client.client_id
+            or message.user_sequence == 0
+        ):
+            return
+        observed_at = time.monotonic()
+        publisher_at = _stamp_seconds(message.publisher_stamp)
+        driver_received_at = _stamp_seconds(message.driver_received_stamp)
+        transitions = tuple(
+            (transition.stage, _stamp_seconds(transition.stamp))
+            for transition in message.transitions
+        ) or ((message.stage, None),)
+        self.command_events.extend(
+            CommandEvent(
+                observed_at=observed_at,
+                client_id=message.client_id,
+                user_sequence=message.user_sequence,
+                publisher_at=publisher_at,
+                driver_received_at=driver_received_at,
+                transition_at=transition_at,
+                stage=stage,
+                ack_support=message.ack_support,
+            )
+            for stage, transition_at in transitions
+        )
+
+    def _on_command_status_batch(self, message: HandCommandStatusBatch) -> None:
+        for status in message.statuses:
+            self._on_command_status(status)
+
+    def _on_diagnostics(self, message: DiagnosticArray) -> None:
+        expected_name = f"{self.driver_name}: hand_driver"
+        for status in message.status:
+            if status.name != expected_name:
+                continue
+            self.diagnostic_observations.append(
+                DiagnosticObservation(
+                    observed_at=time.monotonic(),
+                    values={item.key: item.value for item in status.values},
+                )
+            )
+
+    def configure_rates(
+        self,
+        angle_hz: float,
+        tactile_hz: float,
+        angle_feedback: str,
+        diagnostic_hz: float,
+        timeout_s: float,
+    ) -> None:
+        """Atomically align SDK polling and ROS cache publication rates."""
+
+        if not self.parameter_client.wait_for_service(timeout_sec=timeout_s):
+            raise RuntimeError(f"参数服务未就绪: {self.driver_name}")
+        publish_hz = max(angle_hz, tactile_hz)
+        parameters = [
+            Parameter("angles_hz", value=angle_hz),
+            Parameter("angle_feedback", value=angle_feedback),
+            Parameter("force_hz", value=tactile_hz),
+            *[
+                Parameter(f"force_{name}_hz", value=0.0)
+                for name in ("fn", "fns", "ft", "fts", "fd", "fds", "px")
+            ],
+            Parameter("publish_rate_hz", value=publish_hz),
+            Parameter("diagnostic_rate_hz", value=diagnostic_hz),
+        ]
+        future = self.parameter_client.call_async(
+            SetParametersAtomically.Request(
+                parameters=[parameter.to_parameter_msg() for parameter in parameters]
+            )
+        )
+        _spin_until_future(self, future, timeout_s)
+        response = future.result()
+        if response is None or not response.result.successful:
+            reason = "无响应" if response is None else response.result.reason
+            raise RuntimeError(f"驱动频率配置失败: {reason}")
+
+    def destroy_benchmark(self) -> None:
+        self.command_client.destroy()
+        for subscription in self._observation_subscriptions:
+            self.destroy_subscription(subscription)
+        self._observation_subscriptions.clear()
+
+
+def _complete_sensor(sensor) -> bool:
+    if not sensor.available:
+        return (
+            not sensor.raw_bytes and not sensor.fields and sensor.total_data_length == 0
+        )
+    if not sensor.fields or len(sensor.raw_bytes) != sensor.total_data_length:
+        return False
+    offset = 0
+    for field in sensor.fields:
+        if (
+            field.byte_offset != offset
+            or field.byte_length <= 0
+            or field.element_count <= 0
+            or field.component_count not in (1, 3)
+            or len(field.values) != field.element_count * field.component_count
+            or any(not math.isfinite(value) for value in field.values)
+        ):
+            return False
+        offset += field.byte_length
+    return offset == sensor.total_data_length
+
+
+def _spin_until_future(node: Node, future: Future, timeout_s: float) -> None:
+    deadline = time.monotonic() + timeout_s
+    while rclpy.ok() and not future.done() and time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=0.05)
+    if not future.done():
+        raise RuntimeError("等待 ROS 服务响应超时")
+
+
+def _stamp_seconds(stamp: Time) -> float | None:
+    if stamp.sec == 0 and stamp.nanosec == 0:
+        return None
+    return stamp.sec + stamp.nanosec / 1_000_000_000
+
+
+def _spin_until(
+    node: Node,
+    predicate: Callable[[], bool],
+    timeout_s: float,
+) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while rclpy.ok() and time.monotonic() < deadline:
+        if predicate():
+            return True
+        rclpy.spin_once(node, timeout_sec=min(0.05, deadline - time.monotonic()))
+    return predicate()
+
+
+def _resolve_angle_target(
+    parsed: argparse.Namespace,
+    node: FrequencyBenchmarkNode,
+) -> tuple[float, ...]:
+    values = parsed.angle_values or node.latest_percent_angles
+    if values is None:
+        raise RuntimeError(
+            "没有完整有效的 percent 角度；请检查轮询或显式传 --angle-values"
+        )
+    target = tuple(float(value) for value in values)
+    joint_count = len(node.command_client.joint_names)
+    if len(target) != joint_count:
+        raise ValueError(f"--angle-values 必须提供 {joint_count} 个值")
+    if parsed.joint_index >= joint_count:
+        raise ValueError(f"--joint-index 必须小于关节数量 {joint_count}")
+    if any(not math.isfinite(value) or not 0.0 <= value <= 100.0 for value in target):
+        raise ValueError("--angle-values 必须是 0..100 内的有限值")
+    return target
+
+
+def _angle_values(
+    baseline: tuple[float, ...],
+    elapsed: float,
+    parsed: argparse.Namespace,
+) -> tuple[float, ...]:
+    if parsed.angle_amplitude == 0.0:
+        return baseline
+    values = list(baseline)
+    offset = parsed.angle_amplitude * math.sin(
+        2.0 * math.pi * elapsed / parsed.angle_period
+    )
+    values[parsed.joint_index] = min(
+        100.0,
+        max(0.0, baseline[parsed.joint_index] + offset),
+    )
+    return tuple(values)
+
+
+def _warm_up(
+    node: FrequencyBenchmarkNode,
+    duration_s: float,
+    *,
+    require_tactile: bool,
+    state_start: int,
+) -> None:
+    deadline = time.monotonic() + duration_s
+    while rclpy.ok() and time.monotonic() < deadline:
+        rclpy.spin_once(node, timeout_sec=min(0.05, deadline - time.monotonic()))
+    if not require_tactile:
+        return
+    new_events = node.state_events[state_start:]
+    if not any(
+        event.channel == "tactile" and event.valid and not event.stale
+        for event in new_events
+    ):
+        raise RuntimeError("预热期间未收到完整有效的触觉事务")
+
+
+def _run_window(
+    node: FrequencyBenchmarkNode,
+    parsed: argparse.Namespace,
+    angle_hz: float,
+    baseline: tuple[float, ...],
+) -> BenchmarkResult:
+    start_diagnostic = node.latest_diagnostic
+    if start_diagnostic is None:
+        raise RuntimeError("测试开始时缺少 health diagnostics")
+    start_generation = start_diagnostic.values.get("connection_generation")
+    state_start = len(node.state_events)
+    command_start = len(node.command_events)
+    started_at = time.monotonic()
+    deadline = started_at + parsed.duration
+    next_command_at = started_at
+    period = 1.0 / angle_hz
+    sent_at: list[float] = []
+    sent_sequences: set[int] = set()
+
+    while rclpy.ok() and time.monotonic() < deadline:
+        diagnostic = node.latest_diagnostic
+        if diagnostic is not None and (
+            diagnostic.values.get("connected", "").lower() != "true"
+            or diagnostic.values.get("connection_generation") != start_generation
+        ):
+            break
+        now = time.monotonic()
+        timeout_s = min(0.005, max(0.0, next_command_at - now), deadline - now)
+        rclpy.spin_once(node, timeout_sec=timeout_s)
+        now = time.monotonic()
+        if now < next_command_at or now >= deadline:
+            continue
+        values = _angle_values(baseline, now - started_at, parsed)
+        publication = node.command_client.set_percent_angles(values)
+        sent_at.append(time.monotonic())
+        sent_sequences.add(publication.user_sequence)
+        next_command_at += period
+        if next_command_at <= now:
+            missed = math.floor((now - next_command_at) / period) + 1
+            next_command_at += missed * period
+
+    ended_at = min(time.monotonic(), deadline)
+    measurement_end_diagnostic = _latest_diagnostic_at_or_before(
+        node.diagnostic_observations,
+        ended_at,
+    )
+    drain_deadline = time.monotonic() + parsed.drain_time
+    while rclpy.ok() and time.monotonic() < drain_deadline:
+        rclpy.spin_once(
+            node,
+            timeout_sec=min(0.05, drain_deadline - time.monotonic()),
+        )
+
+    state_events = tuple(
+        event
+        for event in node.state_events[state_start:]
+        if started_at <= event.observed_at <= ended_at
+    )
+    command_events = tuple(
+        event
+        for event in node.command_events[command_start:]
+        if event.client_id == node.command_client.client_id
+        and event.user_sequence in sent_sequences
+        and started_at <= event.observed_at <= drain_deadline
+    )
+    return evaluate_measurements(
+        BenchmarkMeasurements(
+            client_id=node.command_client.client_id,
+            requested_angle_hz=angle_hz,
+            requested_tactile_hz=parsed.tactile_hz,
+            angle_feedback_policy=parsed.angle_feedback,
+            started_at=started_at,
+            ended_at=ended_at,
+            sent_at=tuple(sent_at),
+            state_events=state_events,
+            command_events=command_events,
+            start_diagnostic=start_diagnostic,
+            measurement_end_diagnostic=measurement_end_diagnostic,
+            end_diagnostic=node.latest_diagnostic,
+        ),
+        minimum_ratio=parsed.minimum_ratio,
+    )
+
+
+def _log_result(
+    node: Node,
+    result: BenchmarkResult,
+    repetition: int,
+) -> None:
+    status = "PASS" if result.passed else "FAIL"
+    p95 = (
+        "N/A"
+        if result.command_interval_p95_ms is None
+        else f"{result.command_interval_p95_ms:.2f}ms"
+    )
+    node.get_logger().info(
+        f"[{status}] angle={result.requested_angle_hz:g}Hz "
+        f"tactile={result.requested_tactile_hz:g}Hz 第{repetition}轮: "
+        f"publish={result.command_publish_hz:.2f}Hz, "
+        f"received={result.command_received_hz:.2f}Hz, "
+        f"accepted={result.command_accepted_hz:.2f}Hz, "
+        f"dispatch={result.command_dispatch_hz:.2f}Hz, "
+        f"terminal={result.command_terminal_hz:.2f}Hz, "
+        f"angle_feedback={_format_rate(result.angle_feedback_hz)}, "
+        f"angle_echo={_format_rate(result.angle_command_feedback_hz)}, "
+        f"angle_read={_format_rate(result.angle_read_completion_hz)}, "
+        f"angle_cache={_format_rate(result.angle_cache_update_hz)}, "
+        f"angle_ros={_format_rate(result.angle_ros_publish_hz)}, "
+        f"tactile_read={_format_rate(result.tactile_read_completion_hz)}, "
+        f"tactile_cache={_format_rate(result.tactile_cache_update_hz)}, "
+        f"tactile_ros={_format_rate(result.tactile_ros_publish_hz)}, "
+        f"resultant_cache={_format_rate(result.normal_force_resultant_cache_update_hz)}, "
+        f"resultant_ros={_format_rate(result.normal_force_resultant_ros_publish_hz)}, "
+        f"command_p95={p95}, failed={result.failed_commands}, "
+        f"superseded={result.superseded_commands}"
+    )
+    node.get_logger().info(
+        "  latency_ms[p50/p95/p99]: "
+        f"publish->receive={_format_latency(result.publish_to_receive_latency)}, "
+        f"receive->accept={_format_latency(result.receive_to_accept_latency)}, "
+        f"accept->dispatch={_format_latency(result.accept_to_dispatch_latency)}, "
+        f"publish->dispatch={_format_latency(result.publish_to_dispatch_latency)}"
+    )
+    for reason in result.reasons:
+        node.get_logger().error(f"  - {reason}")
+
+
+def _format_latency(stats: LatencyStats) -> str:
+    if stats.p50_ms is None or stats.p95_ms is None or stats.p99_ms is None:
+        return "N/A"
+    return f"{stats.p50_ms:.2f}/{stats.p95_ms:.2f}/{stats.p99_ms:.2f}"
+
+
+def _format_rate(value: float | None) -> str:
+    return "N/A" if value is None else f"{value:.2f}Hz"
+
+
+def _latest_diagnostic_at_or_before(
+    observations: list[DiagnosticObservation],
+    observed_at: float,
+) -> DiagnosticObservation | None:
+    return next(
+        (
+            observation
+            for observation in reversed(observations)
+            if observation.observed_at <= observed_at
+        ),
+        None,
+    )
+
+
+def _run(parsed: argparse.Namespace, node: FrequencyBenchmarkNode) -> bool:
+    if not spin_until_ready(node, node.command_client, parsed.startup_timeout):
+        raise RuntimeError(f"等待驱动角度接口就绪超时: {node.driver_name}")
+    node.start_observing()
+    needs_angle_baseline = parsed.angle_values is None
+    if needs_angle_baseline and not parsed.no_configure_driver:
+        node.configure_rates(
+            100.0,
+            0.0,
+            "query_only",
+            parsed.diagnostic_hz,
+            parsed.startup_timeout,
+        )
+    if not _spin_until(
+        node,
+        lambda: (
+            node.latest_diagnostic is not None
+            and (not needs_angle_baseline or node.latest_percent_angles is not None)
+        ),
+        parsed.startup_timeout,
+    ):
+        expected = "health diagnostics"
+        if needs_angle_baseline:
+            expected = f"有效 percent 角度状态和 {expected}"
+        raise RuntimeError(f"等待首次{expected}超时")
+    baseline = _resolve_angle_target(parsed, node)
+    model = node.command_client.model
+    node.get_logger().info(
+        f"型号={model}, 关节数={len(node.command_client.joint_names)}, "
+        f"完整触觉={parsed.tactile_hz:g}Hz"
+    )
+
+    highest_stable: float | None = None
+    all_passed = True
+    for angle_hz in parsed.angle_rates:
+        if not parsed.no_configure_driver:
+            node.configure_rates(
+                angle_hz,
+                parsed.tactile_hz,
+                parsed.angle_feedback,
+                parsed.diagnostic_hz,
+                parsed.startup_timeout,
+            )
+        state_start = len(node.state_events)
+        _warm_up(
+            node,
+            parsed.warmup,
+            require_tactile=parsed.tactile_hz > 0,
+            state_start=state_start,
+        )
+
+        results = []
+        for repetition in range(1, parsed.repetitions + 1):
+            result = _run_window(node, parsed, angle_hz, baseline)
+            results.append(result)
+            _log_result(node, result, repetition)
+            if any("连接" in reason for reason in result.reasons):
+                raise RuntimeError("连接在测试期间变化，已中止剩余频率测试")
+        if all(result.passed for result in results):
+            highest_stable = angle_hz
+        else:
+            all_passed = False
+            if not parsed.continue_after_failure:
+                break
+
+    if highest_stable is None:
+        node.get_logger().error("没有候选频率连续通过全部轮次")
+    else:
+        node.get_logger().info(f"稳定角度频率上限（候选集内）: {highest_stable:g} Hz")
+    return all_passed and highest_stable == parsed.angle_rates[-1]
+
+
+def main(args: Sequence[str] | None = None) -> None:
+    """Run the typed angle and complete tactile frequency benchmark."""
+
+    raw_args = sys.argv if args is None else [sys.argv[0], *args]
+    try:
+        parsed = _parse_args(remove_ros_args(raw_args)[1:])
+        _validate_args(parsed)
+        driver_name = resolve_driver_name(parsed.driver_name)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+
+    rclpy.init(args=raw_args)
+    node = FrequencyBenchmarkNode(driver_name)
+    exit_code = 1
+    try:
+        exit_code = 0 if _run(parsed, node) else 2
+    except KeyboardInterrupt:
+        exit_code = 130
+    except (RuntimeError, ValueError) as error:
+        node.get_logger().error(str(error))
+    finally:
+        node.destroy_benchmark()
+        node.destroy_node()
+        rclpy.try_shutdown()
+    if exit_code:
+        raise SystemExit(exit_code)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,29 @@
+InheritParentConfig: false
+Checks: '-*,readability-identifier-naming'
+WarningsAsErrors: 'readability-identifier-naming'
+HeaderFilterRegex: '(^|.*/)linkerbot_hand_ros_cpp/(include|src|test)/.*\.(hpp|h)$'
+FormatStyle: file
+
+CheckOptions:
+  readability-identifier-naming.ClassCase: CamelCase
+  readability-identifier-naming.StructCase: CamelCase
+  readability-identifier-naming.FunctionCase: lower_case
+  readability-identifier-naming.FunctionIgnoredRegexp: '^(SetUp|TearDown|SetUpTestSuite|TearDownTestSuite)$'
+  readability-identifier-naming.VariableCase: lower_case
+  readability-identifier-naming.MemberCase: lower_case
+  readability-identifier-naming.PrivateMemberCase: lower_case
+  readability-identifier-naming.PrivateMemberSuffix: '_'
+  readability-identifier-naming.ParameterCase: lower_case
+  readability-identifier-naming.ConstantParameterCase: lower_case
+  readability-identifier-naming.ConstantPointerParameterCase: lower_case
+  readability-identifier-naming.NamespaceCase: lower_case
+  readability-identifier-naming.EnumCase: CamelCase
+  readability-identifier-naming.EnumConstantCase: CamelCase
+  readability-identifier-naming.EnumConstantPrefix: k
+  readability-identifier-naming.ConstantCase: CamelCase
+  readability-identifier-naming.ConstantPrefix: k
+  readability-identifier-naming.LocalConstantCase: lower_case
+  readability-identifier-naming.LocalConstantPointerCase: lower_case
+  readability-identifier-naming.TypeAliasCase: CamelCase
+  readability-identifier-naming.TypedefCase: CamelCase
+  readability-identifier-naming.TemplateParameterCase: CamelCase

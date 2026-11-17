@@ -1,0 +1,7 @@
+/**:
+  ros__parameters:
+    discover: true
+    channels: [can0]
+    discovery_timeout_s: 10.0
+    angles_hz: 100.0
+    publish_rate_hz: 100.0
