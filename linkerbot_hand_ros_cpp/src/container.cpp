@@ -1,17 +1,36 @@
+#include "linkerbot/hand/api/config.hpp"
+#include "linkerbot/hand/capabilities.hpp"
+#include "linkerbot/hand/discovery.hpp"
+#include "linkerbot/hand/errors.hpp"
 #include "linkerbot_hand_ros_cpp/conversions.hpp"
+#include "linkerbot_hand_ros_cpp/driver_config.hpp"
 #include "linkerbot_hand_ros_cpp/hand_node.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <cstddef>
+#include <exception>
 #include <fcntl.h>
 #include <filesystem>
-#include <fstream>
-#include <jsoncpp/json/json.h>
+#include <json/reader.h>
+#include <json/value.h>
+#include <json/writer.h>
 #include <lifecycle_msgs/msg/state.hpp>
-#include <rclcpp/rclcpp.hpp>
+#include <memory>
+#include <rclcpp/executors/multi_threaded_executor.hpp>
+#include <rclcpp/logger.hpp>
+#include <rclcpp/logging.hpp>
+#include <rclcpp/node.hpp>
+#include <rclcpp/parameter.hpp>
+#include <rclcpp/utilities.hpp>
+#include <rclcpp_lifecycle/lifecycle_node.hpp>
 #include <set>
 #include <sstream>
+#include <string>
 #include <unistd.h>
+#include <utility>
+#include <vector>
+#include <yaml-cpp/node/node.h>
 #include <yaml-cpp/yaml.h>
 
 namespace driver = linkerbot_hand_ros_cpp;
@@ -261,7 +280,7 @@ int main(int argc, char **argv) {
                     throw hand::ValidationError("invalid deployment schema");
                 }
                 if (deployment.isMember("autostart") &&
-                    !owner->get_node_parameters_interface()->get_parameter_overrides().count("autostart")) {
+                    (owner->get_node_parameters_interface()->get_parameter_overrides().count("autostart") == 0u)) {
                     autostart = deployment["autostart"].asBool();
                 }
                 for (const auto &key : deployment.getMemberNames()) {
@@ -316,7 +335,8 @@ int main(int argc, char **argv) {
                     }
                     config.discovery.channels = channels;
                 }
-                std::set<std::string> bindings, physical;
+                std::set<std::string> bindings;
+                std::set<std::string> physical;
                 for (const auto &binding : deployment["hands"]) {
                     const auto ns =
                         driver::normalize_namespace(binding["namespace"].asString(), owner->get_namespace());
@@ -392,13 +412,13 @@ int main(int argc, char **argv) {
                     for (const auto &candidate : report.candidates()) {
                         if (candidate.status() == hand::DiscoveryStatus::kVerified &&
                             matches(binding["match"], match(candidate))) {
-                            if (found) {
+                            if (found != nullptr) {
                                 throw hand::AmbiguousHandError("deployment binding matched multiple devices");
                             }
                             found = &candidate;
                         }
                     }
-                    if (!found) {
+                    if (found == nullptr) {
                         throw hand::NoHandFoundError("deployment binding has no matching device");
                     }
                     selected.push_back(*found);
