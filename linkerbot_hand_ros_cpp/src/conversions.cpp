@@ -491,9 +491,9 @@ namespace linkerbot_hand_ros_cpp {
         for (size_t i = 0; i < caps.joints.size(); ++i) {
             const bool percent_valid = i < value.percent.size() && value.percent[i].has_value();
             const bool physical_valid = i < value.physical_rad.size() && value.physical_rad[i].has_value();
-            result.percent.push_back(percent_valid ? *value.percent[i] : nan);
+            result.percent.push_back(i < value.percent.size() ? value.percent[i].value_or(nan) : nan);
             result.percent_valid.push_back(percent_valid);
-            result.physical_rad.push_back(physical_valid ? *value.physical_rad[i] : nan);
+            result.physical_rad.push_back(i < value.physical_rad.size() ? value.physical_rad[i].value_or(nan) : nan);
             result.physical_rad_valid.push_back(physical_valid);
         }
         result.meta = metadata(value.meta, now);
@@ -523,8 +523,8 @@ namespace linkerbot_hand_ros_cpp {
             msg::ForceSensorValue sensor;
             sensor.sensor_name = value.sensor_names[i];
             sensor.present = i < value.raw.size() && value.raw[i].has_value();
-            if (sensor.present) {
-                sensor.raw = *value.raw[i];
+            if (i < value.raw.size()) {
+                sensor.raw = value.raw[i].value_or(std::vector<double>{});
             }
             if (i < value.units.size()) {
                 sensor.unit = value.units[i].value_or("");
@@ -532,8 +532,8 @@ namespace linkerbot_hand_ros_cpp {
             if (i < value.encodings.size()) {
                 sensor.encoding = value.encodings[i].value_or("");
             }
-            if (i < value.valid_values.size() && value.valid_values[i]) {
-                for (bool valid : *value.valid_values[i]) {
+            if (i < value.valid_values.size()) {
+                for (bool valid : value.valid_values[i].value_or(std::vector<bool>{})) {
                     sensor.valid_values.push_back(valid);
                 }
             }
