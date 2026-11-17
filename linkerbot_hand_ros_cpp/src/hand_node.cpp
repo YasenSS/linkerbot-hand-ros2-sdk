@@ -922,27 +922,11 @@ namespace linkerbot_hand_ros_cpp {
                 report(error);
             }
         }
-        void publish_diagnostics() {
-            std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
-            if (!lease.owns_lock() || config.diagnostic_rate_hz == 0) {
-                return;
-            }
-            diagnostic_msgs::msg::DiagnosticArray array;
-            array.header.stamp = node.now();
-            diagnostic_msgs::msg::DiagnosticStatus status;
-            status.name = std::string(node.get_fully_qualified_name()) + ": hand_driver";
-            const auto health = device ? device->get_health() : hand::HandHealth{};
-            status.hardware_id = device ? model_name(device->get_capabilities().model) : "undiscovered";
-            auto value = [&](const std::string &key, const auto &data) {
-                diagnostic_msgs::msg::KeyValue item;
-                item.key = key;
-                std::ostringstream stream;
-                stream << std::boolalpha << data;
-                item.value = stream.str();
-                status.values.push_back(std::move(item));
-            };
-            const char *connections[] = {"closed", "connecting", "connected", "reconnecting", "faulted"};
-            const char *lifecycles[] = {"closed", "opening", "open", "closing", "recovering", "faulted"};
+        template <typename Value>
+        void append_basic_diagnostics(const hand::HandHealth &health, diagnostic_msgs::msg::DiagnosticStatus &status,
+                                      const Value &value) {
+            const std::array connections = {"closed", "connecting", "connected", "reconnecting", "faulted"};
+            const std::array lifecycles = {"closed", "opening", "open", "closing", "recovering", "faulted"};
             value("model", status.hardware_id);
             value("lifecycle_state", lifecycles[static_cast<size_t>(health.lifecycle_state)]);
             value("connection_state", connections[static_cast<size_t>(health.connection_state)]);
@@ -990,6 +974,10 @@ namespace linkerbot_hand_ros_cpp {
                 value(prefix + "_failed", family.failed);
                 value(prefix + "_superseded", family.superseded);
             }
+        }
+        template <typename Value>
+        void append_error_diagnostics(const hand::HandHealth &health, diagnostic_msgs::msg::DiagnosticStatus &status,
+                                      const Value &value) {
             status.level = diagnostic_msgs::msg::DiagnosticStatus::OK;
             status.message = "operational";
             if (!active) {
@@ -1019,6 +1007,13 @@ namespace linkerbot_hand_ros_cpp {
                     status.message = last_error_message;
                 }
             }
+        }
+        template <typename Value> void append_channel_diagnostics(const hand::HandHealth &health, const Value &value) {
+            const auto unknown = std::numeric_limits<double>::quiet_NaN();
+            auto seconds = [](const auto &duration) {
+                return duration ? std::chrono::duration<double>(*duration).count()
+                                : std::numeric_limits<double>::quiet_NaN();
+            };
             for (const auto &channel : health.channels) {
                 value("channel_" + channel.channel + "_requested_hz", channel.requested_hz);
                 value("channel_" + channel.channel + "_achieved_hz", channel.achieved_hz);
@@ -1036,6 +1031,38 @@ namespace linkerbot_hand_ros_cpp {
                 value("channel_" + channel.channel + "_sequence", channel.data_age.sequence);
                 value("channel_" + channel.channel + "_generation", channel.data_age.generation);
             }
+        }
+        static const char *bool_text(bool value) { return value ? "true" : "false"; }
+        template <typename Value>
+        void append_force_diagnostics(const hand::DeviceCapabilities &caps, const Value &value) {
+            const auto unknown = std::numeric_limits<double>::quiet_NaN();
+            for (const auto &field : caps.force_fields()) {
+                const auto prefix = "force_" + std::string(field.name);
+                const auto parameter_name = prefix + "_hz";
+                double requested =
+                    node.has_parameter(parameter_name) ? node.get_parameter(parameter_name).as_double() : unknown;
+                if (field.name == "fn") {
+                    requested = std::max(requested, node.get_parameter("force_hz").as_double());
+                }
+                value(prefix + "_requested_hz", requested);
+                double query_rate = field.query_channel ? 0.0 : unknown;
+                if (const auto query_channel = field.query_channel) {
+                    for (const auto &query : config.polling) {
+                        if (query.semantic == query_channel.value_or(hand::TelemetrySemantic::kForce)) {
+                            query_rate = 1000.0 / static_cast<double>(query.interval.count());
+                        }
+                    }
+                }
+                value(prefix + "_query_hz", query_rate);
+                value(prefix + "_achieved_hz", unknown);
+                value(prefix + "_query_channel",
+                      field.query_channel ? semantic_name(field.query_channel.value_or(hand::TelemetrySemantic::kForce))
+                                          : "unknown");
+                value(prefix + "_supported",
+                      field.supported.has_value() ? bool_text(field.supported.value_or(false)) : "unknown");
+            }
+        }
+        template <typename Value> void append_projection_diagnostics(const Value &value) {
             if (device) {
                 const auto caps = device->get_capabilities();
                 std::string unavailable_states;
@@ -1057,54 +1084,39 @@ namespace linkerbot_hand_ros_cpp {
                 }
                 value("unsupported_state_interfaces", unavailable_states);
                 value("unsupported_state_error_code", unavailable_states.empty() ? "none" : "unsupported_operation");
-                for (const auto &field : caps.force_fields()) {
-                    const auto prefix = "force_" + std::string(field.name);
-                    const auto parameter_name = prefix + "_hz";
-                    double requested =
-                        node.has_parameter(parameter_name) ? node.get_parameter(parameter_name).as_double() : unknown;
-                    if (field.name == "fn") {
-                        requested = std::max(requested, node.get_parameter("force_hz").as_double());
-                    }
-                    value(prefix + "_requested_hz", requested);
-                    double query_rate = field.query_channel ? 0.0 : unknown;
-                    if (const auto query_channel = field.query_channel) {
-                        for (const auto &query : config.polling) {
-                            if (query.semantic == query_channel.value_or(hand::TelemetrySemantic::kForce)) {
-                                query_rate = 1000.0 / static_cast<double>(query.interval.count());
-                            }
-                        }
-                    }
-                    value(prefix + "_query_hz", query_rate);
-                    value(prefix + "_achieved_hz", unknown);
-                    value(prefix + "_query_channel",
-                          field.query_channel
-                              ? semantic_name(field.query_channel.value_or(hand::TelemetrySemantic::kForce))
-                              : "unknown");
-                    value(prefix + "_supported", field.supported.has_value()
-                                                     ? (field.supported.value_or(false) ? "true" : "false")
-                                                     : "unknown");
-                }
+                append_force_diagnostics(caps, value);
             }
+        }
+        void publish_diagnostics() {
+            std::shared_lock<std::shared_mutex> const lease(gate, std::try_to_lock);
+            if (!lease.owns_lock() || config.diagnostic_rate_hz == 0) {
+                return;
+            }
+            diagnostic_msgs::msg::DiagnosticArray array;
+            array.header.stamp = node.now();
+            diagnostic_msgs::msg::DiagnosticStatus status;
+            status.name = std::string(node.get_fully_qualified_name()) + ": hand_driver";
+            const auto health = device ? device->get_health() : hand::HandHealth{};
+            status.hardware_id = device ? model_name(device->get_capabilities().model) : "undiscovered";
+            auto value = [&](const std::string &key, const auto &data) {
+                diagnostic_msgs::msg::KeyValue item;
+                item.key = key;
+                std::ostringstream stream;
+                stream << std::boolalpha;
+                if constexpr (std::is_array_v<std::remove_reference_t<decltype(data)>>) {
+                    stream << std::string_view(std::data(data), std::size(data) - 1);
+                } else {
+                    stream << data;
+                }
+                item.value = stream.str();
+                status.values.push_back(std::move(item));
+            };
+            append_basic_diagnostics(health, status, value);
+            append_error_diagnostics(health, status, value);
+            append_channel_diagnostics(health, value);
+            append_projection_diagnostics(value);
             array.status.push_back(std::move(status));
             diagnostic_pub->publish(array);
-        }
-        void destroy_interfaces() {
-            subscriptions.clear();
-            services.clear();
-            angles_pub.reset();
-            telemetry_pubs.clear();
-            field_pubs.clear();
-            force_pub.reset();
-            tactile_pub.reset();
-            sensors_pub.reset();
-            normal_pub.reset();
-            stall_pub.reset();
-            interfaces_created = false;
-            published.clear();
-            mocked.clear();
-            published_capabilities.reset();
-            published_identity_generation = 0;
-            published_identity_timestamp.reset();
         }
         void close() {
             active = false;
