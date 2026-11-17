@@ -963,18 +963,22 @@ namespace linkerbot_hand_ros_cpp {
                     }
                     value(prefix + "_requested_hz", requested);
                     double query_rate = field.query_channel ? 0.0 : unknown;
-                    if (field.query_channel) {
+                    if (const auto query_channel = field.query_channel) {
                         for (const auto &query : config.polling) {
-                            if (query.semantic == *field.query_channel) {
-                                query_rate = 1000.0 / query.interval.count();
+                            if (query.semantic == query_channel.value_or(hand::TelemetrySemantic::kForce)) {
+                                query_rate = 1000.0 / static_cast<double>(query.interval.count());
                             }
                         }
                     }
                     value(prefix + "_query_hz", query_rate);
                     value(prefix + "_achieved_hz", unknown);
                     value(prefix + "_query_channel",
-                          field.query_channel ? semantic_name(*field.query_channel) : "unknown");
-                    value(prefix + "_supported", field.supported ? (*field.supported ? "true" : "false") : "unknown");
+                          field.query_channel
+                              ? semantic_name(field.query_channel.value_or(hand::TelemetrySemantic::kForce))
+                              : "unknown");
+                    value(prefix + "_supported", field.supported.has_value()
+                                                     ? (field.supported.value_or(false) ? "true" : "false")
+                                                     : "unknown");
                 }
             }
             array.status.push_back(std::move(status));
