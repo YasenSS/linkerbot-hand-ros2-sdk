@@ -226,8 +226,10 @@ namespace linkerbot_hand_ros_cpp {
                 throw hand::ValidationError(std::string(rate.name) + " must be zero or in 0.001..1000");
             }
             if (hz > 0) {
-                result.polling.push_back(
-                    {rate.semantic, std::chrono::milliseconds(static_cast<int64_t>(std::ceil(1000.0 / hz)))});
+                hand::PollingChannel channel;
+                channel.semantic = rate.semantic;
+                channel.interval = std::chrono::milliseconds(static_cast<int64_t>(std::ceil(1000.0 / hz)));
+                result.polling.push_back(std::move(channel));
             }
         }
         result.transport_json = text("transport_json");
