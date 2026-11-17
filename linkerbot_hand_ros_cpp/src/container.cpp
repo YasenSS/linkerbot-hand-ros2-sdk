@@ -69,7 +69,6 @@ namespace {
             try {
                 return parse(node.Scalar());
             } catch (const hand::ValidationError &) {
-                // A non-JSON YAML scalar is a string, not a parse failure.
                 return node.Scalar();
             }
         }
@@ -239,105 +238,139 @@ namespace {
     }
 } // namespace
 
-int main(int argc, char **argv) {
-    rclcpp::init(argc, argv);
-    std::vector<std::shared_ptr<driver::HandNode>> nodes;
-    int status = 0;
-    try {
-        auto owner = std::make_shared<rclcpp::Node>(
-            "linkerbot_hand_container", rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
-        auto declare = [&](const auto &key, const auto &initial) {
-            if (!owner->has_parameter(key)) {
-                owner->declare_parameter(key, initial);
-            }
-        };
-        declare("device_namespaces", std::vector<std::string>{});
-        declare("device_parameters_json", std::string("{}"));
-        declare("deployment_json", std::string());
-        declare("deployment_base_dir", std::string());
-        declare("discover", false);
-        declare("autostart", true);
-        for (const auto *name : {"discovery_mode", "discovery_output", "deployment_config", "autostart_override"}) {
-            declare(name, std::string());
+namespace {
+    template <typename Range, typename Predicate, typename Failure>
+    void reject_first(const Range &items, const Predicate &invalid, const Failure &failure) {
+        const auto found = std::find_if(items.begin(), items.end(), invalid);
+        if (found != items.end()) {
+            failure(*found);
         }
-        declare("discovery_config_json", std::string("{}"));
-        declare("driver_parameters_json", std::string("{}"));
-        declare("discovery_namespace", std::string("/"));
-        declare("channels", std::vector<std::string>{});
-        declare("discovery_config", std::string());
-        declare("output", std::string("hands.yaml"));
-        auto deployment_text = owner->get_parameter("deployment_json").as_string();
-        const auto mode = owner->get_parameter("discovery_mode").as_string();
-        if (!mode.empty() && mode != "single" && mode != "multi" && mode != "file") {
-            throw hand::ValidationError("unknown discovery startup mode");
-        }
-        if (mode == "file") {
-            if (!deployment_text.empty()) {
-                throw hand::ValidationError("deployment_config conflicts with deployment_json");
-            }
-            const auto path = std::filesystem::absolute(owner->get_parameter("deployment_config").as_string());
-            deployment_text = Json::writeString(Json::StreamWriterBuilder(), yaml_json(YAML::LoadFile(path.string())));
-            owner->set_parameter(rclcpp::Parameter("deployment_base_dir", path.parent_path().string()));
-        }
-        const bool discover = owner->get_parameter("discover").as_bool() || !deployment_text.empty() || !mode.empty();
-        const auto common_parameters = parse(owner->get_parameter("driver_parameters_json").as_string());
-        if (!common_parameters.isObject()) {
-            throw hand::ValidationError("driver_parameters_json must be an object");
-        }
-        auto device_parameters = parse(owner->get_parameter("device_parameters_json").as_string());
-        auto names = owner->get_parameter("device_namespaces").as_string_array();
-        bool autostart = owner->get_parameter("autostart").as_bool();
-        const auto autostart_override = owner->get_parameter("autostart_override").as_string();
-        if (!autostart_override.empty() && autostart_override != "true" && autostart_override != "false") {
-            throw hand::ValidationError("autostart_override must be true or false");
-        }
-        auto output_path = owner->get_parameter("discovery_output").as_string();
-        if (output_path.empty()) {
-            output_path = owner->get_parameter("output").as_string();
-        }
-        if (discover && deployment_text.empty() && mode != "single" && std::filesystem::exists(output_path)) {
-            throw hand::ValidationError("output exists; refusing overwrite: " + output_path);
-        }
+    }
+    struct ContainerSession {
+        ~ContainerSession() = default;
+        explicit ContainerSession(std::vector<std::shared_ptr<driver::HandNode>> &storage) : nodes(storage) {}
+        ContainerSession(const ContainerSession &) = delete;
+        ContainerSession &operator=(const ContainerSession &) = delete;
+        ContainerSession(ContainerSession &&) = delete;
+        ContainerSession &operator=(ContainerSession &&) = delete;
+
+        std::vector<std::shared_ptr<driver::HandNode>> &nodes;
+        std::shared_ptr<rclcpp::Node> owner;
+        std::string deployment_text;
+        std::string mode;
+        Json::Value common_parameters;
+        Json::Value device_parameters;
+        std::vector<std::string> names;
+        std::string autostart_override;
+        std::string output_path;
         Json::Value deployment;
         std::vector<hand::DiscoveryCandidate> selected;
         std::vector<Json::Value> runtime_parameters;
-        if (discover) {
+        std::shared_ptr<rclcpp_lifecycle::LifecycleNode> configuration;
+        bool discover = false;
+        bool autostart = true;
+        hand::DiscoveryConfig discovery;
+
+        void initialize() {
+            owner = std::make_shared<rclcpp::Node>(
+                "linkerbot_hand_container",
+                rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true));
+            auto declare = [&](const std::string &key, const auto &initial) {
+                if (!owner->has_parameter(key)) {
+                    owner->declare_parameter(key, initial);
+                }
+            };
+            declare("device_namespaces", std::vector<std::string>{});
+            declare("device_parameters_json", std::string("{}"));
+            declare("deployment_json", std::string());
+            declare("deployment_base_dir", std::string());
+            declare("discover", false);
+            declare("autostart", true);
+            for (const auto *name : {"discovery_mode", "discovery_output", "deployment_config", "autostart_override"}) {
+                declare(name, std::string());
+            }
+            declare("discovery_config_json", std::string("{}"));
+            declare("driver_parameters_json", std::string("{}"));
+            declare("discovery_namespace", std::string("/"));
+            declare("channels", std::vector<std::string>{});
+            declare("discovery_config", std::string());
+            declare("output", std::string("hands.yaml"));
+        }
+
+        void read_startup() {
+            deployment_text = owner->get_parameter("deployment_json").as_string();
+            mode = owner->get_parameter("discovery_mode").as_string();
+            if (!mode.empty() && mode != "single" && mode != "multi" && mode != "file") {
+                throw hand::ValidationError("unknown discovery startup mode");
+            }
+            if (mode == "file") {
+                if (!deployment_text.empty()) {
+                    throw hand::ValidationError("deployment_config conflicts with deployment_json");
+                }
+                const auto path = std::filesystem::absolute(owner->get_parameter("deployment_config").as_string());
+                deployment_text =
+                    Json::writeString(Json::StreamWriterBuilder(), yaml_json(YAML::LoadFile(path.string())));
+                owner->set_parameter(rclcpp::Parameter("deployment_base_dir", path.parent_path().string()));
+            }
+            discover = owner->get_parameter("discover").as_bool() || !deployment_text.empty() || !mode.empty();
+            common_parameters = parse(owner->get_parameter("driver_parameters_json").as_string());
+            if (!common_parameters.isObject()) {
+                throw hand::ValidationError("driver_parameters_json must be an object");
+            }
+            device_parameters = parse(owner->get_parameter("device_parameters_json").as_string());
+            names = owner->get_parameter("device_namespaces").as_string_array();
+            autostart = owner->get_parameter("autostart").as_bool();
+            autostart_override = owner->get_parameter("autostart_override").as_string();
+            if (!autostart_override.empty() && autostart_override != "true" && autostart_override != "false") {
+                throw hand::ValidationError("autostart_override must be true or false");
+            }
+            output_path = owner->get_parameter("discovery_output").as_string();
+            if (output_path.empty()) {
+                output_path = owner->get_parameter("output").as_string();
+            }
+            if (discover && deployment_text.empty() && mode != "single" && std::filesystem::exists(output_path)) {
+                throw hand::ValidationError("output exists; refusing overwrite: " + output_path);
+            }
+        }
+
+        void parse_deployment() {
+            deployment = parse(deployment_text);
+            if (deployment["version"].asInt() != 1 ||
+                deployment["schema"].asString() != "linkerbot_hand_ros.discovery") {
+                throw hand::ValidationError("invalid deployment schema");
+            }
+            if (deployment.isMember("autostart") &&
+                (owner->get_node_parameters_interface()->get_parameter_overrides().count("autostart") == 0u)) {
+                autostart = deployment["autostart"].asBool();
+            }
+            reject_first(
+                deployment.getMemberNames(),
+                [&](const auto &key) {
+                    return key != "schema" && key != "version" && key != "autostart" && key != "discovery" &&
+                           key != "hands";
+                },
+                [&](const auto &key) { throw hand::ValidationError("unknown deployment field: " + key); });
+            if (!deployment["hands"].isArray() || deployment["hands"].empty()) {
+                throw hand::ValidationError("deployment hands must be nonempty");
+            }
+        }
+
+        void configure_discovery() {
             rclcpp::NodeOptions options;
             options.use_global_arguments(false);
             options.parameter_overrides(
                 {rclcpp::Parameter("discover", true),
                  rclcpp::Parameter("channels", owner->get_parameter("channels").as_string_array()),
                  rclcpp::Parameter("discovery_config", owner->get_parameter("discovery_config").as_string())});
-            if (!deployment_text.empty()) {
-                deployment = parse(deployment_text);
-                if (deployment["version"].asInt() != 1 ||
-                    deployment["schema"].asString() != "linkerbot_hand_ros.discovery") {
-                    throw hand::ValidationError("invalid deployment schema");
-                }
-                if (deployment.isMember("autostart") &&
-                    (owner->get_node_parameters_interface()->get_parameter_overrides().count("autostart") == 0u)) {
-                    autostart = deployment["autostart"].asBool();
-                }
-                for (const auto &key : deployment.getMemberNames()) {
-                    if (key != "schema" && key != "version" && key != "autostart" && key != "discovery" &&
-                        key != "hands") {
-                        throw hand::ValidationError("unknown deployment field: " + key);
-                    }
-                }
-                if (!deployment["hands"].isArray() || deployment["hands"].empty()) {
-                    throw hand::ValidationError("deployment hands must be nonempty");
-                }
-            }
-            auto configuration =
-                std::make_shared<rclcpp_lifecycle::LifecycleNode>("cpp_discovery_configuration", options);
+            configuration = std::make_shared<rclcpp_lifecycle::LifecycleNode>("cpp_discovery_configuration", options);
             driver::declare_parameters(*configuration);
-            auto config = driver::read_config(*configuration);
+            discovery = driver::read_config(*configuration).discovery;
             const auto discovery_json = owner->get_parameter("discovery_config_json").as_string();
             if (discovery_json != "{}") {
                 if (!deployment_text.empty() || !owner->get_parameter("discovery_config").as_string().empty()) {
                     throw hand::ValidationError("discovery_config_json conflicts with other discovery settings");
                 }
-                driver::apply_discovery_configuration(config.discovery, discovery_json);
+                driver::apply_discovery_configuration(discovery, discovery_json);
             }
             auto common_values = parameters(common_parameters);
             for (const auto &value : common_values) {
@@ -354,108 +387,127 @@ int main(int argc, char **argv) {
             // Runtime validation uses discovery=true to avoid selecting a model or
             // opening a transport before the identity scan has resolved the endpoint.
             (void)driver::read_config(*configuration, common_values);
-            if (!deployment_text.empty()) {
-                if (!owner->get_parameter("discovery_config").as_string().empty()) {
-                    throw hand::ValidationError("deployment discovery conflicts with discovery_config");
+        }
+
+        void validate_deployment() {
+            if (!owner->get_parameter("discovery_config").as_string().empty()) {
+                throw hand::ValidationError("deployment discovery conflicts with discovery_config");
+            }
+            if (!deployment["discovery"].isNull()) {
+                driver::apply_discovery_configuration(
+                    discovery, Json::writeString(Json::StreamWriterBuilder(), deployment["discovery"]),
+                    owner->get_parameter("deployment_base_dir").as_string());
+            }
+            const auto channels = owner->get_parameter("channels").as_string_array();
+            if (!channels.empty()) {
+                if (deployment["discovery"].isMember("channels") && channels != discovery.channels) {
+                    throw hand::ValidationError("channels conflicts with deployment discovery.channels");
                 }
-                if (!deployment["discovery"].isNull()) {
-                    driver::apply_discovery_configuration(
-                        config.discovery, Json::writeString(Json::StreamWriterBuilder(), deployment["discovery"]),
-                        owner->get_parameter("deployment_base_dir").as_string());
-                }
-                const auto channels = owner->get_parameter("channels").as_string_array();
-                if (!channels.empty()) {
-                    if (deployment["discovery"].isMember("channels") && channels != config.discovery.channels) {
-                        throw hand::ValidationError("channels conflicts with deployment discovery.channels");
-                    }
-                    config.discovery.channels = channels;
-                }
-                std::set<std::string> bindings;
-                std::set<std::string> physical;
-                for (const auto &binding : deployment["hands"]) {
-                    const auto ns =
-                        driver::normalize_namespace(binding["namespace"].asString(), owner->get_namespace());
-                    if (!bindings.insert(ns).second) {
-                        throw hand::ValidationError("duplicate namespace");
-                    }
-                    if (!binding.isObject() || binding.size() != 3 || !binding.isMember("namespace") ||
-                        !binding.isMember("match") || !binding.isMember("parameters")) {
-                        throw hand::ValidationError("hand requires namespace, match, parameters");
-                    }
-                    const auto &endpoint = binding["match"];
-                    for (const auto *key : {"backend", "channel", "model", "side", "wire_protocol"}) {
-                        if (!endpoint[key].isString() || endpoint[key].asString().empty()) {
-                            throw hand::ValidationError("incomplete discovery identity match");
-                        }
-                    }
-                    if (!endpoint["address"].isObject()) {
-                        throw hand::ValidationError("match.address must be an object");
-                    }
-                    for (const auto &key : endpoint["address"].getMemberNames()) {
-                        if (key != "scheme" && key != "request_id" && key != "response_id" && key != "is_extended_id" &&
-                            key != "node_id" && key != "host_id") {
-                            throw hand::UnsupportedOperationError("match.address." + key + ": no C++ SDK field");
-                        }
-                    }
-                    const auto key = endpoint["backend"].asString() + ":" + endpoint["channel"].asString();
-                    if (!physical.insert(key).second) {
-                        throw hand::ValidationError("duplicate physical channel");
-                    }
-                    for (const auto &key : endpoint.getMemberNames()) {
-                        if (key != "backend" && key != "channel" && key != "model" && key != "side" &&
-                            key != "wire_protocol" && key != "address" && key != "serial_number" &&
-                            key != "product_code") {
-                            throw hand::UnsupportedOperationError("match." + key + ": no C++ SDK identity field");
-                        }
-                    }
-                    auto values = parameters(binding["parameters"]);
-                    for (const auto &value : values) {
-                        const auto &key = value.get_name();
-                        if (key == "model" || key == "side" || key == "channel" || key == "transport_json" ||
-                            key == "address" || key == "host_address" || key == "discover" || key == "channels" ||
-                            key == "discovery_config") {
-                            throw hand::ValidationError("discovery parameters must not override endpoint: " + key);
-                        }
-                    }
-                    values.emplace_back("model", lower(endpoint["model"].asString()));
-                    values.emplace_back("side", endpoint["side"].asString());
-                    rclcpp::NodeOptions preflight_options;
-                    preflight_options.use_global_arguments(false);
-                    preflight_options.parameter_overrides(values);
-                    auto preflight = std::make_shared<rclcpp_lifecycle::LifecycleNode>("cpp_deployment_preflight",
-                                                                                       preflight_options);
-                    driver::declare_parameters(*preflight);
-                    for (const auto &value : values) {
-                        if (!preflight->has_parameter(value.get_name())) {
-                            throw hand::UnsupportedOperationError("unknown parameter: " + value.get_name());
-                        }
-                    }
-                    (void)driver::read_config(*preflight);
+                discovery.channels = channels;
+            }
+            std::set<std::string> bindings;
+            std::set<std::string> physical;
+            for (const auto &binding : deployment["hands"]) {
+                validate_binding(binding, bindings, physical);
+            }
+        }
+
+        void validate_binding(const Json::Value &binding, std::set<std::string> &bindings,
+                              std::set<std::string> &physical) {
+            const auto ns = driver::normalize_namespace(binding["namespace"].asString(), owner->get_namespace());
+            if (!bindings.insert(ns).second) {
+                throw hand::ValidationError("duplicate namespace");
+            }
+            if (!binding.isObject() || binding.size() != 3 || !binding.isMember("namespace") ||
+                !binding.isMember("match") || !binding.isMember("parameters")) {
+                throw hand::ValidationError("hand requires namespace, match, parameters");
+            }
+            const auto &endpoint = binding["match"];
+            validate_endpoint(endpoint);
+            const auto key = endpoint["backend"].asString() + ":" + endpoint["channel"].asString();
+            if (!physical.insert(key).second) {
+                throw hand::ValidationError("duplicate physical channel");
+            }
+            validate_binding_parameters(binding);
+        }
+
+        static void validate_endpoint(const Json::Value &endpoint) {
+            for (const auto *key : {"backend", "channel", "model", "side", "wire_protocol"}) {
+                if (!endpoint[key].isString() || endpoint[key].asString().empty()) {
+                    throw hand::ValidationError("incomplete discovery identity match");
                 }
             }
-            if (!autostart_override.empty()) {
-                autostart = autostart_override == "true";
+            if (!endpoint["address"].isObject()) {
+                throw hand::ValidationError("match.address must be an object");
             }
-            const auto report = hand::discover_hands(config.discovery);
-            for (const auto &failure : report.failures()) {
-                RCLCPP_WARN(owner->get_logger(), "%s: %s", failure.code().c_str(), failure.message().c_str());
+            reject_first(
+                endpoint["address"].getMemberNames(),
+                [&](const auto &key) {
+                    return key != "scheme" && key != "request_id" && key != "response_id" && key != "is_extended_id" &&
+                           key != "node_id" && key != "host_id";
+                },
+                [&](const auto &key) {
+                    throw hand::UnsupportedOperationError("match.address." + key + ": no C++ SDK field");
+                });
+            reject_first(
+                endpoint.getMemberNames(),
+                [&](const auto &key) {
+                    return key != "backend" && key != "channel" && key != "model" && key != "side" &&
+                           key != "wire_protocol" && key != "address" && key != "serial_number" &&
+                           key != "product_code";
+                },
+                [&](const auto &key) {
+                    throw hand::UnsupportedOperationError("match." + key + ": no C++ SDK identity field");
+                });
+        }
+
+        static void validate_binding_parameters(const Json::Value &binding) {
+            auto values = parameters(binding["parameters"]);
+            for (const auto &value : values) {
+                const auto &key = value.get_name();
+                if (key == "model" || key == "side" || key == "channel" || key == "transport_json" ||
+                    key == "address" || key == "host_address" || key == "discover" || key == "channels" ||
+                    key == "discovery_config") {
+                    throw hand::ValidationError("discovery parameters must not override endpoint: " + key);
+                }
             }
+            values.emplace_back("model", lower(binding["match"]["model"].asString()));
+            values.emplace_back("side", binding["match"]["side"].asString());
+            rclcpp::NodeOptions preflight_options;
+            preflight_options.use_global_arguments(false);
+            preflight_options.parameter_overrides(values);
+            auto preflight =
+                std::make_shared<rclcpp_lifecycle::LifecycleNode>("cpp_deployment_preflight", preflight_options);
+            driver::declare_parameters(*preflight);
+            reject_first(
+                values, [&](const auto &value) { return !preflight->has_parameter(value.get_name()); },
+                [&](const auto &value) {
+                    throw hand::UnsupportedOperationError("unknown parameter: " + value.get_name());
+                });
+            (void)driver::read_config(*preflight);
+        }
+
+        static const hand::DiscoveryCandidate &find_binding(const Json::Value &expected,
+                                                            const hand::DiscoveryReport &report) {
+            const hand::DiscoveryCandidate *found = nullptr;
+            for (const auto &candidate : report.candidates()) {
+                if (candidate.status() == hand::DiscoveryStatus::kVerified && matches(expected, match(candidate))) {
+                    if (found != nullptr) {
+                        throw hand::AmbiguousHandError("deployment binding matched multiple devices");
+                    }
+                    found = &candidate;
+                }
+            }
+            if (found == nullptr) {
+                throw hand::NoHandFoundError("deployment binding has no matching device");
+            }
+            return *found;
+        }
+        void select_candidates(const hand::DiscoveryReport &report) {
             names.clear();
             if (!deployment_text.empty()) {
                 for (const auto &binding : deployment["hands"]) {
-                    const hand::DiscoveryCandidate *found = nullptr;
-                    for (const auto &candidate : report.candidates()) {
-                        if (candidate.status() == hand::DiscoveryStatus::kVerified &&
-                            matches(binding["match"], match(candidate))) {
-                            if (found != nullptr) {
-                                throw hand::AmbiguousHandError("deployment binding matched multiple devices");
-                            }
-                            found = &candidate;
-                        }
-                    }
-                    if (found == nullptr) {
-                        throw hand::NoHandFoundError("deployment binding has no matching device");
-                    }
+                    const auto *found = &find_binding(binding["match"], report);
                     selected.push_back(*found);
                     names.push_back(binding["namespace"].asString());
                     auto runtime = common_parameters;
@@ -482,6 +534,9 @@ int main(int argc, char **argv) {
             if (selected.empty()) {
                 throw hand::NoHandFoundError("no verified hands found");
             }
+        }
+
+        void save_deployment(const hand::DiscoveryReport &report) {
             for (auto &name : names) {
                 if (!(mode == "single" && name == "/")) {
                     name = driver::normalize_namespace(name, owner->get_namespace());
@@ -493,7 +548,7 @@ int main(int argc, char **argv) {
             output["version"] = 1;
             output["autostart"] = autostart;
             output["hands"] = Json::Value(Json::arrayValue);
-            output["discovery"] = parse(driver::discovery_configuration(config.discovery));
+            output["discovery"] = parse(driver::discovery_configuration(discovery));
             output["discovery"]["channels"] = Json::Value(Json::arrayValue);
             for (size_t i = 0; i < selected.size(); ++i) {
                 const auto &candidate = selected[i];
@@ -501,12 +556,10 @@ int main(int argc, char **argv) {
                 if (!physical.insert(key).second) {
                     throw hand::AmbiguousHandError("more than one device selected on physical channel " + key);
                 }
-                size_t count = 0;
-                for (const auto &observed : report.candidates()) {
-                    if (observed.channel().backend() + ":" + observed.channel().name() == key) {
-                        ++count;
-                    }
-                }
+                const auto count =
+                    std::count_if(report.candidates().begin(), report.candidates().end(), [&](const auto &observed) {
+                        return observed.channel().backend() + ":" + observed.channel().name() == key;
+                    });
                 if (count != 1) {
                     throw hand::AmbiguousHandError("selected channel contains additional endpoints");
                 }
@@ -521,55 +574,60 @@ int main(int argc, char **argv) {
                 save(output_path, output);
             }
         }
-        if (names.empty()) {
-            throw hand::ValidationError("device_namespaces must be nonempty");
-        }
-        std::set<std::string> unique;
-        for (size_t i = 0; i < names.size(); ++i) {
-            const auto ns = mode == "single" && names[i] == "/"
-                                ? std::string("/")
-                                : driver::normalize_namespace(names[i], owner->get_namespace());
-            if (!unique.insert(ns).second) {
-                throw hand::ValidationError("duplicate namespace");
+
+        void create_nodes() {
+            if (names.empty()) {
+                throw hand::ValidationError("device_namespaces must be nonempty");
             }
-            rclcpp::NodeOptions options;
-            // Launch supplies container options through /** parameter files. Child
-            // settings have already been resolved into device_parameters_json; do
-            // not leak owner parameters (autostart, output, ...) into hand nodes.
-            options.use_global_arguments(false);
-            options.arguments({"--ros-args", "-r", "__node:=linkerbot_hand", "-r", "__ns:=" + ns});
-            driver::HandNode::DeviceFactory factory;
-            if (discover) {
-                const auto candidate = selected[i];
-                auto values = parameters(runtime_parameters[i]);
-                values.emplace_back("model", driver::model_name(candidate.model()));
-                values.emplace_back("side",
-                                    candidate.model() == hand::Model::kL30 ? "" : driver::side_name(candidate.side()));
-                options.parameter_overrides(values);
-                factory = [candidate](const hand::HandDeviceConfig &cfg) {
-                    hand::HandRuntimeConfig runtime;
-                    runtime.angle_mapping_path = cfg.angle_mapping_path;
-                    runtime.command_timeout = cfg.command_timeout;
-                    runtime.identity_timeout = cfg.identity_timeout;
-                    runtime.transaction_timeout = cfg.transaction_timeout;
-                    runtime.shutdown_timeout = cfg.shutdown_timeout;
-                    runtime.command_rate_hz = cfg.command_rate_hz;
-                    runtime.discrete_queue_capacity = cfg.discrete_queue_capacity;
-                    runtime.recovery_attempts = cfg.recovery_attempts;
-                    runtime.recovery_backoff = cfg.recovery_backoff;
-                    return candidate.create_hand_device(runtime);
-                };
-            } else if (device_parameters.isMember(names[i])) {
-                options.parameter_overrides(parameters(device_parameters[names[i]]));
-            }
-            nodes.push_back(std::make_shared<driver::HandNode>(options, factory));
-            for (const auto &value : options.parameter_overrides()) {
-                if (!nodes.back()->has_parameter(value.get_name())) {
-                    throw hand::UnsupportedOperationError("unknown parameter: " + value.get_name());
+            std::set<std::string> unique;
+            for (size_t i = 0; i < names.size(); ++i) {
+                const auto ns = mode == "single" && names[i] == "/"
+                                    ? std::string("/")
+                                    : driver::normalize_namespace(names[i], owner->get_namespace());
+                if (!unique.insert(ns).second) {
+                    throw hand::ValidationError("duplicate namespace");
                 }
+                rclcpp::NodeOptions options;
+                // Launch supplies container options through /** parameter files. Child
+                // settings have already been resolved into device_parameters_json; do
+                // not leak owner parameters (autostart, output, ...) into hand nodes.
+                options.use_global_arguments(false);
+                options.arguments({"--ros-args", "-r", "__node:=linkerbot_hand", "-r", "__ns:=" + ns});
+                driver::HandNode::DeviceFactory factory;
+                if (discover) {
+                    const auto candidate = selected[i];
+                    auto values = parameters(runtime_parameters[i]);
+                    values.emplace_back("model", driver::model_name(candidate.model()));
+                    values.emplace_back(
+                        "side", candidate.model() == hand::Model::kL30 ? "" : driver::side_name(candidate.side()));
+                    options.parameter_overrides(values);
+                    factory = [candidate](const hand::HandDeviceConfig &cfg) {
+                        hand::HandRuntimeConfig runtime;
+                        runtime.angle_mapping_path = cfg.angle_mapping_path;
+                        runtime.command_timeout = cfg.command_timeout;
+                        runtime.identity_timeout = cfg.identity_timeout;
+                        runtime.transaction_timeout = cfg.transaction_timeout;
+                        runtime.shutdown_timeout = cfg.shutdown_timeout;
+                        runtime.command_rate_hz = cfg.command_rate_hz;
+                        runtime.discrete_queue_capacity = cfg.discrete_queue_capacity;
+                        runtime.recovery_attempts = cfg.recovery_attempts;
+                        runtime.recovery_backoff = cfg.recovery_backoff;
+                        return candidate.create_hand_device(runtime);
+                    };
+                } else if (device_parameters.isMember(names[i])) {
+                    options.parameter_overrides(parameters(device_parameters[names[i]]));
+                }
+                nodes.push_back(std::make_shared<driver::HandNode>(options, factory));
+                reject_first(
+                    options.parameter_overrides(),
+                    [&](const auto &value) { return !nodes.back()->has_parameter(value.get_name()); },
+                    [&](const auto &value) {
+                        throw hand::UnsupportedOperationError("unknown parameter: " + value.get_name());
+                    });
             }
         }
-        if (!discover) {
+
+        void validate_physical_nodes() {
             std::set<std::string> physical;
             for (const auto &node : nodes) {
                 driver::DriverConfig endpoint;
@@ -581,28 +639,75 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (!autostart_override.empty()) {
-            autostart = autostart_override == "true";
-        }
-        if (autostart) {
-            for (const auto &node : nodes) {
-                if (node->configure().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE) {
-                    throw hand::LifecycleError("group configure failed");
-                }
+
+        void activate_nodes() {
+            if (std::any_of(nodes.begin(), nodes.end(), [](const auto &node) {
+                    return node->configure().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE;
+                })) {
+                throw hand::LifecycleError("group configure failed");
             }
-            for (const auto &node : nodes) {
-                if (node->activate().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
-                    throw hand::LifecycleError("group activate failed");
-                }
+            if (std::any_of(nodes.begin(), nodes.end(), [](const auto &node) {
+                    return node->activate().id() != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE;
+                })) {
+                throw hand::LifecycleError("group activate failed");
             }
         }
-        rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(),
-                                                          std::max<size_t>(4, nodes.size() * 4));
-        executor.add_node(owner);
-        for (const auto &node : nodes) {
-            executor.add_node(node->get_node_base_interface());
+
+        void spin() {
+            rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(),
+                                                              std::max<size_t>(4, nodes.size() * 4));
+            executor.add_node(owner);
+            for (const auto &node : nodes) {
+                executor.add_node(node->get_node_base_interface());
+            }
+            executor.spin();
         }
-        executor.spin();
+
+        void discover_devices() {
+            configure_discovery();
+            if (!deployment_text.empty()) {
+                parse_deployment();
+                validate_deployment();
+            }
+            if (!autostart_override.empty()) {
+                autostart = autostart_override == "true";
+            }
+            const auto report = hand::discover_hands(discovery);
+            for (const auto &failure : report.failures()) {
+                RCLCPP_WARN(owner->get_logger(), "%s: %s", failure.code().c_str(), failure.message().c_str());
+            }
+            select_candidates(report);
+            save_deployment(report);
+        }
+
+        void run() {
+            initialize();
+            read_startup();
+            if (discover) {
+                discover_devices();
+            }
+            create_nodes();
+            if (!discover) {
+                validate_physical_nodes();
+            }
+            if (!autostart_override.empty()) {
+                autostart = autostart_override == "true";
+            }
+            if (autostart) {
+                activate_nodes();
+            }
+            spin();
+        }
+    };
+}
+
+int main(int argc, char **argv) {
+    rclcpp::init(argc, argv);
+    std::vector<std::shared_ptr<driver::HandNode>> nodes;
+    int status = 0;
+    try {
+        ContainerSession session{nodes};
+        session.run();
     } catch (const std::exception &error) {
         RCLCPP_ERROR(rclcpp::get_logger("linkerbot_hand_container"), "%s: %s", driver::error_code(error).c_str(),
                      error.what());
