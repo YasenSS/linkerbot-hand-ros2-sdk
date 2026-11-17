@@ -6,21 +6,11 @@
 #include "linkerbot/hand/discovery.hpp"
 #include "linkerbot/hand/errors.hpp"
 #include "linkerbot/hand/identity.hpp"
-#include "linkerbot_hand_msgs/msg/hand_capabilities.hpp"
-#include "linkerbot_hand_msgs/msg/hand_command_status.hpp"
-#include "linkerbot_hand_msgs/msg/hand_fault_status_state.hpp"
-#include "linkerbot_hand_msgs/msg/hand_force_field.hpp"
-#include "linkerbot_hand_msgs/msg/hand_joint_command.hpp"
-#include "linkerbot_hand_msgs/msg/hand_joint_state.hpp"
-#include "linkerbot_hand_msgs/msg/hand_normal_force_resultant.hpp"
-#include "linkerbot_hand_msgs/msg/hand_raw_command.hpp"
-#include "linkerbot_hand_msgs/msg/hand_tactile_sensor_state.hpp"
-#include "linkerbot_hand_msgs/msg/hand_telemetry.hpp"
-#include "linkerbot_hand_msgs/msg/sample_metadata.hpp"
 #include "linkerbot_hand_ros_cpp/commands.hpp"
 #include "linkerbot_hand_ros_cpp/conversions.hpp"
 #include "linkerbot_hand_ros_cpp/driver_config.hpp"
 #include "linkerbot_hand_ros_cpp/hand_node.hpp"
+#include "linkerbot_hand_ros_cpp/posix.h"
 #include "linkerbot_hand_ros_cpp/qos.hpp"
 #include <algorithm>
 #include <atomic>
@@ -35,7 +25,18 @@
 #include <lifecycle_msgs/msg/state.hpp>
 #include <limits>
 #include <linkerbot/can/fake_transport.hpp>
+#include <linkerbot_hand_msgs/msg/hand_capabilities.hpp>
+#include <linkerbot_hand_msgs/msg/hand_command_status.hpp>
 #include <linkerbot_hand_msgs/msg/hand_command_status_batch.hpp>
+#include <linkerbot_hand_msgs/msg/hand_fault_status_state.hpp>
+#include <linkerbot_hand_msgs/msg/hand_force_field.hpp>
+#include <linkerbot_hand_msgs/msg/hand_joint_command.hpp>
+#include <linkerbot_hand_msgs/msg/hand_joint_state.hpp>
+#include <linkerbot_hand_msgs/msg/hand_normal_force_resultant.hpp>
+#include <linkerbot_hand_msgs/msg/hand_raw_command.hpp>
+#include <linkerbot_hand_msgs/msg/hand_tactile_sensor_state.hpp>
+#include <linkerbot_hand_msgs/msg/hand_telemetry.hpp>
+#include <linkerbot_hand_msgs/msg/sample_metadata.hpp>
 #include <linkerbot_hand_msgs/srv/get_device_info.hpp>
 #include <linkerbot_hand_msgs/srv/get_raw_values.hpp>
 #include <linkerbot_hand_msgs/srv/recover.hpp>
@@ -49,7 +50,6 @@
 #include <rclcpp/qos.hpp>
 #include <rclcpp/time.hpp>
 #include <rclcpp/utilities.hpp>
-#include <stdlib.h>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -62,35 +62,43 @@ using namespace std::chrono_literals;
 
 // Exercise the actual SDK codec/runtime through an in-memory CAN endpoint.
 // No fake runtime mode is exposed in the installed driver.
-static std::vector<linkerbot::can::Message> reply(const linkerbot::can::Message &request) {
-    if (request.data[0] == 0xC0) {
-        const std::string identity = "LHL6-1-123-L";
-        std::vector<linkerbot::can::Message> result;
-        for (size_t part = 0; part < 4; ++part) {
-            linkerbot::can::Message response{};
-            response.id = request.id;
-            response.dlc = 8;
-            response.data[0] = 0xC0;
-            response.data[1] = part;
-            for (size_t i = 0; i < 6 && part * 6 + i < identity.size(); ++i) {
-                response.data[i + 2] = identity[part * 6 + i];
+namespace {
+    std::vector<linkerbot::can::Message> reply(const linkerbot::can::Message &request) {
+        if (request.data[0] == 0xC0) {
+            const std::string identity = "LHL6-1-123-L";
+            std::vector<linkerbot::can::Message> result;
+            for (size_t part = 0; part < 4; ++part) {
+                linkerbot::can::Message response{};
+                response.id = request.id;
+                response.dlc = 8;
+                response.data[0] = 0xC0;
+                response.data[1] = part;
+                for (size_t i = 0; i < 6 && part * 6 + i < identity.size(); ++i) {
+                    response.data[i + 2] = identity[part * 6 + i];
+                }
+                result.push_back(response);
             }
-            result.push_back(response);
+            return result;
         }
-        return result;
+        auto response = request;
+        response.dlc = 7;
+        if (request.data[0] == 0xC1) {
+            response.dlc = 5;
+        } else if (request.data[0] == 0xC2 || request.data[0] == 0xC4) {
+            response.dlc = 4;
+        }
+        for (size_t i = 1; i < response.dlc; ++i) {
+            response.data[i] = request.dlc > 1 ? request.data[i] : uint8_t(64);
+        }
+        return {response};
     }
-    auto response = request;
-    response.dlc = request.data[0] == 0xC1 ? 5 : (request.data[0] == 0xC2 || request.data[0] == 0xC4) ? 4 : 7;
-    for (size_t i = 1; i < response.dlc; ++i) {
-        response.data[i] = request.dlc > 1 ? request.data[i] : uint8_t(64);
-    }
-    return {response};
-}
+
+} // namespace
 
 class DriverTest : public testing::Test {
 protected:
     static void SetUpTestSuite() {
-        setenv("ROS_DOMAIN_ID", "89", 0);
+        driver::set_environment("ROS_DOMAIN_ID", "89", 0);
         int const argc = 0;
         rclcpp::init(argc, nullptr);
     }
@@ -498,10 +506,14 @@ TEST(Conversions, FaultBitsUseEachSdkModelDefinitionAndPreserveReservedBits) {
         hand::DeviceIdentity identity;
         identity.model = model;
         identity.protocol_version = "0.0.4";
-        const uint8_t mask = model == hand::Model::kL6    ? 0x7f
-                             : model == hand::Model::kL20 ? 0xff
-                             : model == hand::Model::kO30 ? 0xcf
-                                                          : 0x2f;
+        uint8_t mask = 0x2f;
+        if (model == hand::Model::kL6) {
+            mask = 0x7f;
+        } else if (model == hand::Model::kL20) {
+            mask = 0xff;
+        } else if (model == hand::Model::kO30) {
+            mask = 0xcf;
+        }
         for (unsigned raw = 0; raw <= 255; ++raw) {
             hand::FaultSample sample;
             sample.raw.assign(channel->channels.size(), raw);
