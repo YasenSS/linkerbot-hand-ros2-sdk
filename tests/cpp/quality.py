@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
 
+from cppcheck_report import command_database, compiler_definitions
+
 ROOT = Path(__file__).resolve().parents[2]
 PACKAGE = ROOT / "linkerbot_hand_ros_cpp"
 
@@ -36,7 +38,9 @@ def executable(name, version=None):
         result = subprocess.run(
             [path, "--version"], capture_output=True, text=True, check=True
         )
-        if version not in result.stdout:
+        if not re.search(
+            r"\bversion " + re.escape(version) + r"(?:\.|\b)", result.stdout
+        ):
             raise RuntimeError(f"{name} requires version {version}: {result.stdout}")
     return path
 
@@ -68,8 +72,8 @@ def main():
         )
     selected = output / "compile_commands.json"
     selected.write_text(json.dumps(list(entries.values()), indent=2) + "\n")
-    formatter = executable("clang-format", "18.1.8")
-    tidy = executable("clang-tidy", "18.1.8")
+    formatter = executable("clang-format", "18")
+    tidy = executable("clang-tidy", "18")
     cppcheck = executable("cppcheck")
     files = sorted(p for p in PACKAGE.rglob("*") if p.suffix in {".cpp", ".hpp", ".h"})
     results = {}
@@ -89,14 +93,18 @@ def main():
         for path, code in pool.map(check_source, sorted(entries)):
             results[path] = code
     xml = output / "cppcheck.xml"
+    cppcheck_database = output / "cppcheck-compile-commands.json"
+    cppcheck_database.write_text(
+        json.dumps(command_database(list(entries.values())), indent=2) + "\n"
+    )
     with xml.open("w") as errors, (output / "cppcheck.log").open("w") as progress:
         checked = subprocess.run(
             [
                 cppcheck,
-                "--project=" + str(selected),
+                "--project=" + str(cppcheck_database),
                 "--enable=all",
                 "--library=std",
-                "--library=googletest",
+                "--library=" + str(Path(__file__).with_name("ros-framework.cfg")),
                 "-D__unix__=1",
                 "-D__linux__=1",
                 "-U_WIN32",
@@ -107,6 +115,7 @@ def main():
                 "--suppress=missingIncludeSystem",
                 "--xml",
                 "--xml-version=2",
+                *compiler_definitions(list(entries.values())),
             ],
             stdout=progress,
             stderr=errors,
@@ -124,7 +133,11 @@ def main():
         locations = error.findall("location")
         # Cppcheck's first location owns the diagnostic. Later locations can
         # point into a caller while the actual warning belongs to a dependency.
-        if not locations or owned(locations[0].get("file", "")):
+        if (
+            error.get("severity") == "error"
+            or not locations
+            or owned(locations[0].get("file", ""))
+        ):
             findings.append(
                 {
                     "id": error.get("id"),
