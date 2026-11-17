@@ -28,13 +28,13 @@ namespace linkerbot_hand_ros_cpp {
                              const std::vector<rclcpp::Parameter> &overrides = {});
     std::unique_ptr<hand::HandDevice> make_device(const DriverConfig &config);
     bool dynamic_parameter(const std::string &name);
-    void apply_discovery_configuration(hand::DiscoveryConfig &config, const std::string &yaml,
+    void apply_discovery_configuration(hand::DiscoveryConfig &config, const std::string &text,
                                        const std::filesystem::path &base = {});
     std::string discovery_configuration(const hand::DiscoveryConfig &config);
     std::string physical_channel(const DriverConfig &config);
     std::string normalize_namespace(const std::string &value, const std::string &parent = "/");
     void validate_polling(const hand::PollingPlan &plan, const hand::DeviceCapabilities &caps);
-    hand::Model parse_model(const std::string &value);
+    hand::Model parse_model(const std::string &input);
     std::string model_name(hand::Model value);
     std::string side_name(hand::HandSide value);
 } // namespace linkerbot_hand_ros_cpp
