@@ -48,6 +48,6 @@ runs:
       shell: bash
       run: |
         mkdir -p reports/cpp
-        git rev-parse HEAD > reports/cpp/ros-sha.txt
-        git -C external/linkerbot-hand-cpp-sdk rev-parse HEAD > reports/cpp/hand-sha.txt
-        git -C external/linkerbot-transport-cpp rev-parse HEAD > reports/cpp/transport-sha.txt
+        git -c safe.directory="$PWD" rev-parse HEAD > reports/cpp/ros-sha.txt
+        git -c safe.directory="$PWD/external/linkerbot-hand-cpp-sdk" -C external/linkerbot-hand-cpp-sdk rev-parse HEAD > reports/cpp/hand-sha.txt
+        git -c safe.directory="$PWD/external/linkerbot-transport-cpp" -C external/linkerbot-transport-cpp rev-parse HEAD > reports/cpp/transport-sha.txt
