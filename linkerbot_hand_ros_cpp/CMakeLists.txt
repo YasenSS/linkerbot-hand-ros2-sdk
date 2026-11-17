@@ -1,6 +1,16 @@
 cmake_minimum_required(VERSION 3.16)
 project(linkerbot_hand_ros_cpp VERSION 2.0.0 LANGUAGES CXX)
 
+# Keep diagnostics local to this package; source SDKs inherit sanitizer flags.
+option(LINKERBOT_ROS_CPP_SANITIZERS "Instrument the driver and paired SDKs with ASan/UBSan" OFF)
+if(LINKERBOT_ROS_CPP_SANITIZERS)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    message(FATAL_ERROR "ASan/UBSan require GCC or Clang")
+  endif()
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
 find_package(rclcpp REQUIRED)
